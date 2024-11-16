@@ -12,12 +12,18 @@ from __future__ import annotations
 
 import string
 from collections.abc import Callable, Generator
+from typing import TYPE_CHECKING, Any, Optional
 
-from ._enum import Enum, auto
-from ._typing_compat import Any, TypeAlias
+from ._compat import TypeAlias
 
 
-LexGen: TypeAlias = Generator["Token | None", Any, "SubLexer | None"]
+if TYPE_CHECKING:
+    from enum import Enum, auto
+else:
+    from pycc._enum import Enum, auto
+
+
+LexGen: TypeAlias = Generator[Optional["Token"], Any, Optional["SubLexer"]]
 SubLexer: TypeAlias = Callable[[], LexGen]
 
 
@@ -43,7 +49,7 @@ class Token:
 
     __slots__ = ("type", "value")
 
-    def __init__(self, type: TokenType, value: str):
+    def __init__(self, type: TokenType, value: str):  # noqa: A002
         self.type = type
         self.value = value
 
@@ -61,15 +67,15 @@ class TemplateLexer:
 
     Parameters
     ----------
-    input: str
+    text: str
         The string to lex.
 
     Attributes
     ----------
-    input: str
+    text: str
         The string being lexed.
-    pos: int
-        An integer pointing at the current character in the input string.
+    index: int
+        An integer pointing at the current character in the given text.
     tokstart: int
         An integer pointing to the start of the currently processed token.
     state: SubLexer | None
@@ -77,10 +83,10 @@ class TemplateLexer:
         state function. When EOF is encountered, None is returned as the new state.
     """
 
-    def __init__(self, input: str) -> None:
-        self.input = input
-        self.pos = 0
-        self.tokstart = 0
+    def __init__(self, text: str) -> None:
+        self.text: str = text
+        self.index: int = 0
+        self.tokstart: int = 0
         self.state: SubLexer | None = self._lex_text
 
     def lex(self) -> LexGen:
@@ -101,19 +107,20 @@ class TemplateLexer:
     _EXP = set("eE")
 
     @property
-    def _curchar(self) -> str | None:
-        """Get the char at self.pos, or None if we're at EOF."""
+    def current(self) -> str | None:
+        """Get the char at self.index, or None if we're at EOF."""
 
-        return self.input[self.pos] if self.pos < len(self.input) else None
+        return self.text[self.index] if self.index < len(self.text) else None
 
     def _accept(self, validset: set[str]) -> bool:
         """Consume current char if it's in validset, and return True.
+
         Otherwise don't consume it, and return False.
         """
 
-        consumed = self._curchar in validset
+        consumed = self.current in validset
         if consumed:
-            self.pos += 1
+            self.index += 1
         return consumed
 
     def _accept_run(self, validset: set[str]) -> None:
@@ -125,28 +132,28 @@ class TemplateLexer:
     def _ignore_tok(self) -> None:
         """Ignore the current token."""
 
-        self.tokstart = self.pos
+        self.tokstart = self.index
 
     def _emit(self, toktype: TokenType) -> Token:
         """Emit the current token."""
 
-        tok = Token(toktype, self.input[self.tokstart : self.pos])
-        self.tokstart = self.pos
+        tok = Token(toktype, self.text[self.tokstart : self.index])
+        self.tokstart = self.index
         return tok
 
     def _lex_text(self) -> LexGen:
         # Look for the beginning of LEFT_META
-        meta_start = self.input.find(self._LEFT_META, self.pos)
+        meta_start = self.text.find(self._LEFT_META, self.index)
         if meta_start > 0:
             # Found. Emit all text until then (if any) and move to the lex_left_meta state.
-            self.pos = meta_start
-            if self.pos > self.tokstart:
+            self.index = meta_start
+            if self.index > self.tokstart:
                 yield self._emit(TokenType.TEXT)
             return self._lex_left_meta
         else:
             # Not found. This means we're done. There may be some text left until EOF, so emit it if there is.
-            self.pos = len(self.input)
-            if self.pos > self.tokstart:
+            self.index = len(self.text)
+            if self.index > self.tokstart:
                 yield self._emit(TokenType.TEXT)
 
             # Yield None to mark "no more tokens --> EOF"
@@ -155,12 +162,12 @@ class TemplateLexer:
             return None
 
     def _lex_left_meta(self) -> LexGen:
-        self.pos += len(self._LEFT_META)
+        self.index += len(self._LEFT_META)
         yield self._emit(TokenType.LEFT_META)
         return self._lex_inside_action
 
     def _lex_right_meta(self) -> LexGen:
-        self.pos += len(self._RIGHT_META)
+        self.index += len(self._RIGHT_META)
         yield self._emit(TokenType.RIGHT_META)
         return self._lex_text
 
@@ -168,19 +175,19 @@ class TemplateLexer:
         while True:
             # Check for RIGHT_META here before the next char is consumed,
             # to handle empty actions - {{}} - correctly.
-            if self.input.startswith(self._RIGHT_META, self.pos):
+            if self.text.startswith(self._RIGHT_META, self.index):
                 return self._lex_right_meta
 
-            c = self._curchar
+            c = self.current
             # Here a switch statement could be really useful...
             if c is None or c == "\n":
                 msg = "Unterminated action"
                 raise LexerError(msg)
             elif c.isspace():
-                self.pos += 1
+                self.index += 1
                 self._ignore_tok()
             elif c == self._PIPE:
-                self.pos += 1
+                self.index += 1
                 yield self._emit(TokenType.PIPE)
             elif c in self._NUM_STARTERS:
                 return self._lex_number
@@ -201,8 +208,8 @@ class TemplateLexer:
 
         # Figure out if we'll have a decimal or hex number
         digits = self._DEC_DIGITS
-        if self.input.startswith("0x", self.pos):
-            self.pos += 2
+        if self.text.startswith("0x", self.index):
+            self.index += 2
             digits = self._HEX_DIGITS
 
         # Grab the number

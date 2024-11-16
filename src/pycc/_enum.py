@@ -35,21 +35,18 @@
 
 from __future__ import annotations
 
-import collections.abc
+import types
+from collections.abc import Iterable, Mapping, MutableMapping
+from typing import Any, Union, cast
 
-from ._typing_compat import TYPE_CHECKING, Any, MappingProxyType, TypeAlias, cast
+from ._compat import TypeAlias
 
 
 __all__ = ("Enum", "auto", "unique")
 
 
 # Copied from enum in typeshed.
-_EnumNames: TypeAlias = (
-    str
-    | collections.abc.Iterable[str]
-    | collections.abc.Iterable[collections.abc.Iterable[str | Any]]
-    | collections.abc.Mapping[str, Any]
-)
+_EnumNames: TypeAlias = Union[str, Iterable[str], Iterable[Iterable[Union[str, Any]]], Mapping[str, Any]]
 
 _AUTO = object()
 
@@ -59,7 +56,7 @@ class _EnumMember:
 
     # The class overall tries to preserve object identity for fast object comparison.
 
-    _cls: EnumMeta
+    _cls: type[Enum]
 
     def __init__(self, name: str, value: Any) -> None:
         self._name_ = name
@@ -102,7 +99,7 @@ def _is_descriptor(obj: object) -> bool:
 
 
 def _set_names(
-    ns: collections.abc.MutableMapping[str, Any],
+    ns: MutableMapping[str, Any],
     qualname: str | None,
     module: str | None,
     name: str,
@@ -121,10 +118,9 @@ def _set_names(
 class EnumMeta(type):
     """An API-compatible re-implementation of ``enum.EnumMeta``."""
 
-    if TYPE_CHECKING:
-        _member_map_: dict[str, _EnumMember]
-        _value2member_map_: dict[Any, _EnumMember]
-        _member_names_: list[str]
+    _member_map_: dict[str, _EnumMember]
+    _value2member_map_: dict[Any, _EnumMember]
+    _member_names_: list[str]
 
     def __new__(cls, name: str, bases: tuple[type, ...], namespace: dict[str, Any]):
         """Convert class attributes to enum members."""
@@ -143,7 +139,9 @@ class EnumMeta(type):
         # The rules in `enum` are much stricter for what gets skipped.
         # Need to do this upfront so enumerate() returns what's expected for _generate_next_value_().
         members_iter = (
-            (name, value) for name, value in namespace.items() if not _is_descriptor(value) and not name.startswith("_")
+            (name, value)
+            for name, value in namespace.items()
+            if (not _is_descriptor(value) and not name.startswith("_"))
         )
         for index, (mem_name, mem_value) in enumerate(members_iter):
             if mem_value is _AUTO:
@@ -163,7 +161,7 @@ class EnumMeta(type):
             try:
                 member = value_map[mem_value]
             except KeyError:
-                member = value_map[mem_value] = _EnumMember(mem_name, mem_value)
+                value_map[mem_value] = member = _EnumMember(mem_name, mem_value)
                 member_names.append(mem_name)
 
             member_map[mem_name] = member
@@ -182,8 +180,8 @@ class EnumMeta(type):
             mem_value._cls = self
 
     @property
-    def __members__(self) -> MappingProxyType[str, Any]:
-        return MappingProxyType(self._member_map_)
+    def __members__(self) -> types.MappingProxyType[str, Any]:
+        return types.MappingProxyType(self._member_map_)
 
     def __repr__(self):
         return f"<enum {self.__name__!r}>"
@@ -255,7 +253,7 @@ class EnumMeta(type):
         if isinstance(member_names, str):
             ns = {name: index for index, name in enumerate(member_names.replace(",", " ").split(), start=start)}
 
-        elif not isinstance(member_names, collections.abc.Mapping):
+        elif not isinstance(member_names, Mapping):
             names_seq = list(member_names)
             if names_seq:
                 if isinstance(names_seq[0], str):
@@ -277,43 +275,32 @@ class EnumMeta(type):
         return self.__class__(enum_name, bases, ns)
 
 
-if TYPE_CHECKING:
-    from enum import Enum
-else:
-
-    class Enum(metaclass=EnumMeta):
-        """An API-compatible re-implementation of ``enum.Enum``."""
+class Enum(metaclass=EnumMeta):
+    """An API-compatible re-implementation of ``enum.Enum``."""
 
 
-if TYPE_CHECKING:
-    from enum import auto
-else:
+def auto() -> object:
+    """Specify that the member should be an auto-incremented int."""
 
-    def auto() -> object:
-        """Specify that the member should be an auto-incremented int."""
-
-        return _AUTO
+    return _AUTO
 
 
-if TYPE_CHECKING:
-    from enum import unique
-else:
+def unique(cls: type[Enum]) -> type[Enum]:
+    """Make sure all enum members have unique values.
 
-    def unique(cls):  # noqa: ANN001, ANN202
-        """Make sure all enum members have unique values.
+    Raises
+    ------
+    ValueError
+        If any duplicate values are found.
+    """
 
-        Raises
-        ------
-        ValueError
-            If any duplicate values are found.
-        """
+    seen: list[Any] = []
+    for member in cls._member_map_.values():
+        value = member.value
+        if value in seen:
+            msg = f"{cls!r} enum reused {value!r}"
+            raise ValueError(msg)
 
-        seen: list[Any] = []
-        for value in (member.value for member in cls._member_map_.values()):
-            if value in seen:
-                msg = f"{cls!r} enum reused {value!r}"
-                raise ValueError(msg)
+        seen.append(value)
 
-            seen.append(value)
-
-        return cls
+    return cls
