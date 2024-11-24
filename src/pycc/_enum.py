@@ -31,30 +31,42 @@
 #
 # endregion
 
-"""An API-compatible re-implementation of ``enum.Enum`` and related code."""
+"""A modified version of Brett Cannon's basicenum library, which is an API-compatible re-implementation of ``enum.Enum`
+and related code.
+"""
 
 from __future__ import annotations
 
+import functools
 import types
 from collections.abc import Iterable, Mapping, MutableMapping
-from typing import Any, Union, cast
+from typing import Any, TypeVar, Union, cast
 
 from ._compat import TypeAlias
 
 
-__all__ = ("Enum", "auto", "unique")
+__all__ = ("EnumMeta", "Enum", "auto", "unique")
 
 
 # Copied from enum in typeshed.
-_EnumNames: TypeAlias = Union[str, Iterable[str], Iterable[Iterable[Union[str, Any]]], Mapping[str, Any]]
+EnumNames: TypeAlias = Union[
+    str,
+    Iterable[str],
+    Iterable[Iterable[Union[str, Any]]],
+    Mapping[str, Any],
+]
 
-_AUTO = object()
+EnumT = TypeVar("EnumT", bound="type[Enum]")
+
+AUTO = object()
 
 
-class _EnumMember:
+class EnumMember:
     """Representation of an enum member."""
 
     # The class overall tries to preserve object identity for fast object comparison.
+
+    __slots__ = ("_cls", "_name_", "_value_")
 
     _cls: type[Enum]
 
@@ -104,7 +116,7 @@ def _set_names(
     module: str | None,
     name: str,
 ) -> None:
-    """Set various names in the namespace."""
+    """Set various names in a namespace."""
 
     if qualname is not None:
         ns["__qualname__"] = qualname
@@ -118,15 +130,15 @@ def _set_names(
 class EnumMeta(type):
     """An API-compatible re-implementation of ``enum.EnumMeta``."""
 
-    _member_map_: dict[str, _EnumMember]
-    _value2member_map_: dict[Any, _EnumMember]
+    _member_map_: dict[str, EnumMember]
+    _value2member_map_: dict[Any, EnumMember]
     _member_names_: list[str]
 
-    def __new__(cls, name: str, bases: tuple[type, ...], namespace: dict[str, Any]):
+    def __new__(cls, name: str, bases: tuple[type, ...], namespace: dict[str, Any], /, **kwds: Any):
         """Convert class attributes to enum members."""
 
-        member_map: dict[str, _EnumMember] = {}
-        value_map: dict[Any, _EnumMember] = {}
+        member_map: dict[str, EnumMember] = {}
+        value_map: dict[Any, EnumMember] = {}
         member_names: list[str] = []
         last_auto = 0
 
@@ -144,7 +156,7 @@ class EnumMeta(type):
             if (not _is_descriptor(value) and not name.startswith("_"))
         )
         for index, (mem_name, mem_value) in enumerate(members_iter):
-            if mem_value is _AUTO:
+            if mem_value is AUTO:
                 if custom_auto is None:
                     last_auto += 1
                     mem_value = last_auto  # noqa: PLW2901
@@ -161,7 +173,7 @@ class EnumMeta(type):
             try:
                 member = value_map[mem_value]
             except KeyError:
-                value_map[mem_value] = member = _EnumMember(mem_name, mem_value)
+                value_map[mem_value] = member = EnumMember(mem_name, mem_value)
                 member_names.append(mem_name)
 
             member_map[mem_name] = member
@@ -171,22 +183,26 @@ class EnumMeta(type):
         namespace["_value2member_map_"] = value_map
         namespace["_member_names_"] = member_names
 
-        return super().__new__(cls, name, bases, namespace)
+        return super().__new__(cls, name, bases, namespace, **kwds)
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """Make sure enum members have a reference to the parent class."""
+
         super().__init__(*args, **kwargs)
 
         for mem_value in self._member_map_.values():
             mem_value._cls = self
 
-    @property
+    # Basic testing in a CPython REPL indicates that a class will get garbage-collected regardless of its presence in an
+    # external cache, so this should be fine.
+    @functools.cache  # noqa: B019
     def __members__(self) -> types.MappingProxyType[str, Any]:
         return types.MappingProxyType(self._member_map_)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<enum {self.__name__!r}>"
 
-    def __call__(self, value: Any, /):
+    def __call__(self, value: Any, /) -> EnumMember:
         """Search members by value."""
 
         try:
@@ -195,7 +211,7 @@ class EnumMeta(type):
             msg = f"no enum member with a value of {value!r}"
             raise ValueError(msg) from None
 
-    def __getitem__(self, name: str, /):
+    def __getitem__(self, name: str, /) -> EnumMember:
         """Search by member name."""
 
         return self._member_map_[name]
@@ -207,7 +223,6 @@ class EnumMeta(type):
 
     def __iter__(self):
         """Iterate through the members."""
-
         return iter(self._member_map_[name] for name in self._member_names_)
 
     def __reversed__(self):
@@ -238,7 +253,7 @@ class EnumMeta(type):
     def _create_(  # noqa: ANN202, PLR0913
         self,
         enum_name: str,
-        member_names: _EnumNames,
+        member_names: EnumNames,
         /,
         *,
         module: str | None = None,
@@ -266,7 +281,7 @@ class EnumMeta(type):
                 ns = {}
 
         else:
-            ns = member_names  # pyright: ignore
+            ns = member_names  # pyright: ignore [reportAssignmentType]
 
         _set_names(ns, qualname, module, enum_name)
 
@@ -282,10 +297,10 @@ class Enum(metaclass=EnumMeta):
 def auto() -> object:
     """Specify that the member should be an auto-incremented int."""
 
-    return _AUTO
+    return AUTO
 
 
-def unique(cls: type[Enum]) -> type[Enum]:
+def unique(cls: EnumT) -> EnumT:
     """Make sure all enum members have unique values.
 
     Raises

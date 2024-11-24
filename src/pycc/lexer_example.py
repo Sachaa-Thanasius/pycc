@@ -20,7 +20,7 @@ from ._compat import TypeAlias
 if TYPE_CHECKING:
     from enum import Enum, auto
 else:
-    from pycc._enum import Enum, auto
+    from ._enum import Enum, auto
 
 
 LexGen: TypeAlias = Generator[Optional["Token"], Any, Optional["SubLexer"]]
@@ -49,7 +49,7 @@ class Token:
 
     __slots__ = ("type", "value")
 
-    def __init__(self, type: TokenType, value: str):  # noqa: A002
+    def __init__(self, type: TokenType, value: str):
         self.type = type
         self.value = value
 
@@ -59,6 +59,19 @@ class Token:
 
 class LexerError(Exception):
     pass
+
+
+class CharSets:
+    LEFT_META = "{{"
+    RIGHT_META = "}}"
+    PIPE = "|"
+    DOTS = set(".")
+    SIGNS = set("+-")
+    DEC_DIGITS = set(string.digits)
+    NUM_STARTERS = SIGNS | DEC_DIGITS
+    HEX_DIGITS = set(string.hexdigits)
+    ALPHANUM = DEC_DIGITS | set(string.ascii_letters) | set("_")
+    EXP = set("eE")
 
 
 class TemplateLexer:
@@ -83,28 +96,33 @@ class TemplateLexer:
         state function. When EOF is encountered, None is returned as the new state.
     """
 
+    text: str
+    index: int
+    previous: int
+    end: int
+    state: Optional[SubLexer]
+
     def __init__(self, text: str) -> None:
-        self.text: str = text
-        self.index: int = 0
-        self.tokstart: int = 0
-        self.state: SubLexer | None = self._lex_text
+        self.text = text
+
+        self.index = 0
+        self.previous = 0
+        self.end = len(text)
+        self.state = self.program
 
     def lex(self) -> LexGen:
         while self.state:
             self.state = yield from self.state()
 
-    # --------- Internal --------- #
+    # region ----- Helpers -----
 
-    _LEFT_META = "{{"
-    _RIGHT_META = "}}"
-    _PIPE = "|"
-    _DOTS = set(".")
-    _SIGNS = set("+-")
-    _DEC_DIGITS = set(string.digits)
-    _NUM_STARTERS = _SIGNS | _DEC_DIGITS
-    _HEX_DIGITS = set(string.hexdigits)
-    _ALPHANUM = _DEC_DIGITS | set(string.ascii_letters) | set("_")
-    _EXP = set("eE")
+    @property
+    def is_eof(self) -> bool:
+        return self.index >= self.end
+
+    @property
+    def has_advanced(self) -> bool:
+        return self.index > self.previous
 
     @property
     def current(self) -> str | None:
@@ -112,87 +130,97 @@ class TemplateLexer:
 
         return self.text[self.index] if self.index < len(self.text) else None
 
-    def _accept(self, validset: set[str]) -> bool:
+    @property
+    def current_group(self) -> Optional[str]:
+        return self.text[self.previous : self.index] if not self.is_eof else None
+
+    def reset(self) -> None:
+        """Ignore the current token."""
+
+        self.previous = self.index
+
+    def accept(self, validset: set[str]) -> bool:
         """Consume current char if it's in validset, and return True.
 
         Otherwise don't consume it, and return False.
         """
 
-        consumed = self.current in validset
-        if consumed:
+        if self.current in validset:
             self.index += 1
-        return consumed
+            return True
+        else:
+            return False
 
-    def _accept_run(self, validset: set[str]) -> None:
+    def accept_run(self, validset: set[str]) -> None:
         """Consume chars as long as they're in validset (or until EOF)."""
 
-        while self._accept(validset):
+        while self.accept(validset):
             pass
 
-    def _ignore_tok(self) -> None:
-        """Ignore the current token."""
-
-        self.tokstart = self.index
-
-    def _emit(self, toktype: TokenType) -> Token:
+    def emit(self, toktype: TokenType) -> Token:
         """Emit the current token."""
 
-        tok = Token(toktype, self.text[self.tokstart : self.index])
-        self.tokstart = self.index
+        tok = Token(toktype, self.text[self.previous : self.index])
+        self.previous = self.index
         return tok
 
-    def _lex_text(self) -> LexGen:
+    # endregion
+
+    # region ---- Rules ----
+
+    def program(self) -> LexGen:
         # Look for the beginning of LEFT_META
-        meta_start = self.text.find(self._LEFT_META, self.index)
+        meta_start = self.text.find(CharSets.LEFT_META, self.index)
         if meta_start > 0:
-            # Found. Emit all text until then (if any) and move to the lex_left_meta state.
+            # Found. Emit all text until then (if any) and move to the left_meta state.
             self.index = meta_start
-            if self.index > self.tokstart:
-                yield self._emit(TokenType.TEXT)
-            return self._lex_left_meta
+            if self.has_advanced:
+                yield self.emit(TokenType.TEXT)
+            return self.left_meta
         else:
             # Not found. This means we're done. There may be some text left until EOF, so emit it if there is.
             self.index = len(self.text)
-            if self.index > self.tokstart:
-                yield self._emit(TokenType.TEXT)
+            if self.has_advanced:
+                yield self.emit(TokenType.TEXT)
 
             # Yield None to mark "no more tokens --> EOF"
             # Return None to stop the main lexing loop since there is no next state.
             yield None
             return None
 
-    def _lex_left_meta(self) -> LexGen:
-        self.index += len(self._LEFT_META)
-        yield self._emit(TokenType.LEFT_META)
-        return self._lex_inside_action
+    def left_meta(self) -> LexGen:
+        self.index += len(CharSets.LEFT_META)
+        yield self.emit(TokenType.LEFT_META)
+        return self.inside_action
 
-    def _lex_right_meta(self) -> LexGen:
-        self.index += len(self._RIGHT_META)
-        yield self._emit(TokenType.RIGHT_META)
-        return self._lex_text
+    def right_meta(self) -> LexGen:
+        self.index += len(CharSets.RIGHT_META)
+        yield self.emit(TokenType.RIGHT_META)
+        return self.program
 
-    def _lex_inside_action(self) -> LexGen:
+    def inside_action(self) -> LexGen:
         while True:
             # Check for RIGHT_META here before the next char is consumed,
             # to handle empty actions - {{}} - correctly.
-            if self.text.startswith(self._RIGHT_META, self.index):
-                return self._lex_right_meta
+            if self.text.startswith(CharSets.RIGHT_META, self.index):
+                return self.right_meta
 
             c = self.current
             # Here a switch statement could be really useful...
+
             if c is None or c == "\n":
                 msg = "Unterminated action"
                 raise LexerError(msg)
             elif c.isspace():
                 self.index += 1
-                self._ignore_tok()
-            elif c == self._PIPE:
+                self.reset()
+            elif c == CharSets.PIPE:
                 self.index += 1
-                yield self._emit(TokenType.PIPE)
-            elif c in self._NUM_STARTERS:
-                return self._lex_number
+                yield self.emit(TokenType.PIPE)
+            elif c in CharSets.NUM_STARTERS:
+                return self.number
             elif c.isalpha() or c == "_":
-                return self._lex_identifier
+                return self.identifier
             else:
                 msg = "Invalid char '%s' inside action"
                 raise LexerError(msg)
@@ -202,35 +230,37 @@ class TemplateLexer:
         raise LexerError(msg)
         return None
 
-    def _lex_number(self) -> LexGen:
+    def number(self) -> LexGen:
         # Optional sign before the number
-        self._accept(self._SIGNS)
+        self.accept(CharSets.SIGNS)
 
         # Figure out if we'll have a decimal or hex number
-        digits = self._DEC_DIGITS
+        digits = CharSets.DEC_DIGITS
         if self.text.startswith("0x", self.index):
             self.index += 2
-            digits = self._HEX_DIGITS
+            digits = CharSets.HEX_DIGITS
 
         # Grab the number
-        self._accept_run(digits)
+        self.accept_run(digits)
 
         # It may be a float, followed by a dot and optionally more numbers
-        if self._accept(self._DOTS):
-            self._accept_run(digits)
+        if self.accept(CharSets.DOTS):
+            self.accept_run(digits)
 
         # It may be followed by an exponent
-        if self._accept(self._EXP):
-            self._accept(self._SIGNS)
-            self._accept_run(self._DEC_DIGITS)
+        if self.accept(CharSets.EXP):
+            self.accept(CharSets.SIGNS)
+            self.accept_run(CharSets.DEC_DIGITS)
 
-        yield self._emit(TokenType.NUMBER)
-        return self._lex_inside_action
+        yield self.emit(TokenType.NUMBER)
+        return self.inside_action
 
-    def _lex_identifier(self) -> LexGen:
-        self._accept_run(self._ALPHANUM)
-        yield self._emit(TokenType.ID)
-        return self._lex_inside_action
+    def identifier(self) -> LexGen:
+        self.accept_run(CharSets.ALPHANUM)
+        yield self.emit(TokenType.ID)
+        return self.inside_action
+
+    # endregion
 
 
 # -------------------------------------------------------------------
@@ -243,5 +273,6 @@ if __name__ == "__main__":
     print()
 
     tlex = TemplateLexer(text)
+
     for t in tlex.lex():
         print(t)
