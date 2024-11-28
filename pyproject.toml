@@ -87,7 +87,8 @@ extend-ignore = [
     "PLR2004", # "Magic number" depends on the use case.
     "RUF002",  # "Ambiguous character" depends on the use case.
     "RUF003",  # "Ambiguous character" depends on the use case.
-    "RUF022",  # __all__ reordering should be meaningful.
+    "RUF022",  # __all__ ordering can be meaningful.
+    "RUF023",  # __slots__ ordering can be meaningful. 
 
     # ---- Recommended by Ruff when using Ruff format
     "E111",
@@ -101,7 +102,7 @@ extend-ignore = [
 
     # ---- Project-specific rules
     "RET505", # Returns in both parts of if-else can be more readable.
-    "SIM108", # if-else instead of a ternary can be more readable. 
+    "SIM108", # if-else instead of a ternary can be more readable.
 ]
 unfixable = [
     "ERA", # Prevent unlikely erroneous deletion.

@@ -1,85 +1,52 @@
-import sys
+from __future__ import annotations
+
 from collections import deque
-from collections.abc import Generator, Iterable, Iterator
-from itertools import islice, tee
-from typing import Any, TypeVar, Union
+from collections.abc import Iterable
+from typing import Generic, TypeVar
+
+from ._compat import Self
 
 
-_S = TypeVar("_S")
 _T = TypeVar("_T")
 
-_missing: Any = object()
 
-__all__ = ("sliding_window", "make_iterator_peekable", "lookahead")
-
-
-def sliding_window(iterable: Iterable[_T], n: int) -> Generator[tuple[_T, ...]]:
-    """Collect data into overlapping fixed-length chunks or blocks.
-
-    Notes
-    -----
-    This is a recipe from the Python itertools docs.
-
-    Examples
-    --------
-    >>> ["".join(window) for window in sliding_window("ABCDEFG", 4)]
-    ['ABCD', 'BCDE', 'CDEF', 'DEFG']
-    """
-
-    iterator = iter(iterable)
-    window = deque(islice(iterator, n - 1), maxlen=n)
-    for x in iterator:
-        window.append(x)
-        yield tuple(window)
+__all__ = ("PeekableIterator",)
 
 
-def make_iterator_peekable(iterator: Iterator[_T]) -> Iterator[_T]:
-    """Make an iterator peekable via tee.
-
-    Use the returned iterator instead of the original.
-    """
-
-    # This workaround is needed due to changes in 3.14.
-    # ref: https://github.com/python/cpython/issues/126701
-
-    if sys.version_info >= (3, 14):
-        [iterator] = tee(iterator, 1)
-    else:
-        [_, iterator] = tee(iterator, 2)
-
-    return iterator
-
-
-def lookahead(tee_iterator: Iterator[_T], default: _S = _missing) -> Union[_T, _S]:
-    """Return the next value without moving the input forward.
-
-    The given iterator must have been created using itertools.tee().
+class PeekableIterator(Generic[_T]):
+    """Wrap an iterable to allow lookahead during iteration.
 
     Notes
     -----
-    This is a modified version of a recipe from the Python itertools docs.
-
-    Examples
-    --------
-    >>> iterator = iter('abcdef')
-    >>> iterator = make_iterator_peekable(iterator)
-    >>> next(iterator)                  # Move the iterator forward
-    'a'
-    >>> lookahead(iterator)             # Check next value
-    'b'
-    >>> next(iterator)                  # Continue moving forward
-    'b'
+    This is a modified version of more_itertools.peekable.
     """
 
-    # This workaround is needed due to changes in 3.14.
-    # ref: https://github.com/python/cpython/issues/126701
+    def __init__(self, iterable: Iterable[_T]) -> None:
+        self._it = iter(iterable)
+        self._cache: deque[_T] = deque()
 
-    if sys.version_info >= (3, 14):
-        [forked_iterator] = tee(tee_iterator, 1)
-    else:
-        [_, forked_iterator] = tee(tee_iterator, 2)
+    def __iter__(self) -> Self:
+        return self
 
-    if default is _missing:
-        return next(forked_iterator)
-    else:
-        return next(forked_iterator, default)
+    def __next__(self) -> _T:
+        if self._cache:
+            return self._cache.popleft()
+        else:
+            return next(self._it)
+
+    def peek(self) -> _T:
+        """Peek at the upcoming value."""
+
+        if not self._cache:
+            self._cache.append(next(self._it))
+        return self._cache[0]
+
+    def has_more(self) -> bool:
+        """Check if anything is left in the iterator."""
+
+        try:
+            self.peek()
+        except StopIteration:
+            return False
+        else:
+            return True

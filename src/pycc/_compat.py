@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-import sys
-from typing import TYPE_CHECKING
+
+__all__ = ("TYPE_CHECKING", "Any", "Self", "TypeAlias", "Union", "cast")
+
+TYPE_CHECKING = False
 
 
 class _PlaceholderGenericAlias(type(list[int])):
@@ -24,12 +26,15 @@ class _PlaceholderGenericMeta(_PlaceholderMeta):
         return _PlaceholderGenericAlias(self, item)  # pyright: ignore [reportCallIssue]
 
 
-__all__ = ("TypeAlias",)
+if TYPE_CHECKING:
+    from typing import Any, Union, cast
 
-
-if sys.version_info >= (3, 10):
-    from typing import TypeAlias
-elif TYPE_CHECKING:
-    from typing_extensions import TypeAlias
+    from typing_extensions import Self, TypeAlias
 else:
-    TypeAlias = _PlaceholderMeta.from_typing_name("TypeAlias")
+    Any = _PlaceholderMeta.for_typing_name("Any")
+    Self = _PlaceholderMeta.for_typing_name("Self")
+    TypeAlias = _PlaceholderMeta.for_typing_name("TypeAlias")
+    Union = _PlaceholderGenericMeta.for_typing_name("Union")
+
+    def cast(typ: Any, val: Any) -> Any:
+        return val

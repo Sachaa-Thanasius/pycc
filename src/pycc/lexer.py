@@ -1,300 +1,341 @@
-# ruff: noqa: PLW2901
-
 from __future__ import annotations
 
 from collections.abc import Callable, Generator
-from typing import Any, Optional, TypeVar, Union
 
-from ._compat import TypeAlias
-from .token import KEYWORD_TOKEN_MAP, Token, TokenKind
-
-
-_T = TypeVar("_T")
-
-_LexGen: TypeAlias = Generator[Optional["Token"], Any, Optional["_SubLexer"]]
-_SubLexer: TypeAlias = Callable[[], _LexGen]
-_SetLike: TypeAlias = Union[set[_T], frozenset[_T]]
+from .token import PUNCTUATION_TOKEN_MAP, CharSets, Token, TokenKind
 
 
 class CSyntaxError(Exception):
-    pass
+    """Exception raised when attempting to lex invalid C syntax."""
+
+    msg: str
+    filename: str
+    text: str
+    lineno: int
+    offset: int
+    end_offset: int
+
+    def __init__(self, msg: str, location: tuple[str, str, int, int, int]) -> None:
+        super().__init__()
+        self.msg = msg
+        self.filename, self.text, self.lineno, self.offset, self.end_offset = location
+
+    def __str__(self):
+        start = max(0, self.offset - 1)
+        length = self.end_offset - self.offset
+        return (
+            f"File {self.filename!r}, line {self.lineno}\n"
+            f"  {self.text}\n"
+            f'  {start * " "}{length * "^"}\n'
+            f"{self.__class__.__name__}: {self.msg}"
+        )
 
 
-class CharSets:
-    ignored_whitespace = frozenset(" \t")
+def canonicalize_newlines(text: str) -> str:
+    """Canonicalize newlines to "\\n" in the given text. Newlines include "\\r" and "\\r\\n"."""
 
-    ascii_lowercase = frozenset("abcdefghijklmnopqrstuvwxyz")
-    ascii_uppercase = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
-    ascii_letters = ascii_lowercase | ascii_uppercase
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
-    digits = frozenset("0123456789")
-    hex_digits = digits.union("abcdef", "ABCDEF")
-    oct_digits = frozenset("01234567")
-    bin_digits = frozenset("01")
 
-    alpha_numeric = ascii_letters | digits
+def replace_line_continuations(text: str) -> str:
+    """Remove line continuations while keeping logical and physical line numbers synced via extra newlines."""
 
-    identifier_start = ascii_letters.union("_$")
-    identifier_rest = alpha_numeric.union("_$")
+    line_continuation_count = 0
+    fixed_lines: list[str] = []
+
+    for line in text.splitlines(keepends=True):
+        if line.endswith("\\\n"):
+            # Discard the line continuation characters.
+            fixed_lines.append(line.removesuffix("\\\n"))
+
+        else:
+            fixed_lines.append(line)
+
+            if line_continuation_count:
+                # Pad with newlines to match the number of line continuations so far.
+                fixed_lines.append("\n" * line_continuation_count)
+
+    return "".join(fixed_lines)
 
 
 class Lexer:
-    """A lexer Initialize with the input string, and then call lex() which generates tokens.
-    None is generated at EOF (and the generator expires).
+    """A lexer for the C language. The main entrypoint is the lex() method.
 
     Parameters
     ----------
-    text: str
+    source: str
         The string to lex.
+    filename: str
+        The name of the file the string came from.
 
     Attributes
     ----------
-    text: str
+    source: str
         The string being lexed.
-    index: int
-        An integer pointing at the current character in the given text.
+    filename: str
+        The name of the file the string came from.
     previous: int
-        An integer pointing to the start of the currently processed token.
-    state: SubLexer | None
-        One of the state functions. Each such function yields the tokens it finds and then returns the next state
-        function. When EOF is encountered, None is returned as the new state.
+        The index of the start of the token currently being processed.
+    index: int
+        The index of the current character in the given text.
+    end: int
+        The length of the entire text.
+    lineno: int
+        The current line number, based on newlines. Starts at 1.
+    at_bol: bool
+        Whether the token being processed is at the beginning of a line.
+    has_space: bool
+        Whether the token being processed has whitespace preceding it.
     """
 
-    text: str
+    source: str
+    filename: str
     index: int
     previous: int
     end: int
-    state: Optional[_SubLexer]
+    lineno: int
+    at_bol: bool
+    has_space: bool
 
-    def __init__(self, text: str) -> None:
-        self.text = self.replace_line_continuations(self.canonicalize_newlines(text))
+    def __init__(self, source: str, filename: str) -> None:
+        self.source = replace_line_continuations(canonicalize_newlines(source))
+        self.filename = filename
+
         self.previous = 0
         self.index = 0
-        self.end = len(self.text)
-        self.state = self.file
+        self.end = len(self.source)
+        self.lineno = 1
+        self.at_bol = True
+        self.has_space = False
 
-    @staticmethod
-    def canonicalize_newlines(text: str) -> str:
-        """Canonicalize newlines to "\\n" in the given text."""
-
-        return text.replace("\r\n", "\n").replace("\r", "\n")
-
-    @staticmethod
-    def replace_line_continuations(text: str) -> str:
-        """Remove line continuations while keeping logical and physical line numbers synced via extra newlines."""
-
-        fixed_lines: list[str] = []
-        line_continuation_count = 0
-
-        for line in text.splitlines(keepends=True):
-            if line.endswith("\\\n"):
-                line_continuation_count += 1
-                fixed_lines.append(line.removesuffix("\\\n"))
-
-            elif line_continuation_count:
-                # Pad with as many newlines as have been removed from the continuation merging.
-                fixed_lines.append(line + "\n" * line_continuation_count)
-                line_continuation_count = 0
-
-            else:
-                fixed_lines.append(line)
-
-        return "".join(fixed_lines)
-
-    def lex(self) -> _LexGen:
-        while self.state is not None:
-            self.state = yield from self.state()
-
-    # region ---- Helpers ----
+    # region ---- Meta helpers ----
 
     @property
-    def is_eof(self) -> bool:
-        return self.index >= self.end
+    def current(self) -> str:
+        """The character at the current index in the text."""
 
-    @property
-    def has_advanced(self) -> bool:
-        return self.index > self.previous
+        return self.source[self.index]
 
-    @property
-    def current(self) -> Optional[str]:
-        """Get the char at self.index, or None if we're at EOF."""
+    def peek_with_condition(self, predicate: Callable[[str], bool]) -> bool:
+        """Check if the next character in the text meets some condition.
 
-        return self.text[self.index] if not self.is_eof else None
-
-    @property
-    def current_group(self) -> Optional[str]:
-        return self.text[self.previous : self.index] if not self.is_eof else None
-
-    def reset(self) -> None:
-        """Ignore the current token."""
-
-        self.previous = self.index
-
-    def skip(self, num: int) -> None:
-        self.previous = self.index = self.index + num
-
-    def accept(self, validset: _SetLike[str]) -> bool:
-        """Consume current char if it's in validset, and return True.
-
-        Otherwise don't consume it, and return False.
+        If there is no next character, return False.
         """
 
-        if self.current in validset:
-            self.index += 1
-            return True
-        else:
-            return False
+        return (self.index + 1) < self.end and predicate(self.source[self.index + 1])
 
-    def accept_run(self, validset: _SetLike[str]) -> None:
-        """Consume chars as long as they're in validset (or until EOF)."""
+    def reset(self) -> None:
+        """Discard the current potential token."""
 
-        while self.accept(validset):
-            pass
+        self.previous = self.index
 
     def emit(self, toktype: TokenKind) -> Token:
         """Emit the current token."""
 
-        tok = Token(toktype, self.text[self.previous : self.index])
+        tok = Token(
+            toktype,
+            self.source[self.previous : self.index],
+            self.previous,
+            self.end,
+            self.filename,
+            self.at_bol,
+            self.has_space,
+        )
         self.previous = self.index
         return tok
 
+    def get_current_location(self) -> tuple[str, str, int, int, int]:
+        return (self.filename, self.source.splitlines()[self.lineno - 1], self.lineno, self.previous, self.index)
+
     # endregion
 
-    # region ---- Rules ----
+    # region ---- Lexing loop and rules ----
 
-    def file(self) -> _LexGen:
-        current = self.text[self.index]
+    def lex(self) -> Generator[Token]:  # noqa: PLR0912
+        while self.index < self.end:
+            current = self.current
 
-        if current == "\n":
-            self.index += 1
-            has_space = False
-            return self.file
+            if self.source.startswith("//", self.index):
+                # Discard the comment.
+                self.lex_line_comment()
 
-        elif current.isspace():
-            self.index += 1
-            has_space = True
-            return self.file
+            elif self.source.startswith("/*"):
+                # Discoard the comment.
+                self.lex_block_comment()
 
-        elif self.text.startswith("//", self.index):
-            return self.line_comment
+            elif current == "\n":
+                # Discard the newline.
+                self.lex_newline()
 
-        elif self.text.startswith("/*", self.index):
-            return self.block_comment
+            elif current.isspace():
+                # Discard the whitespace.
+                self.lex_whitespace()
 
-        elif current.isdigit() or (current == "." and self.text[self.index + 1].isdigit()):
-            return self.numeric_literal
+            elif current.isdecimal() or (current == "." and self.peek_with_condition(str.isdecimal)):
+                self.lex_numeric_literal()
+                yield self.emit(TokenKind.PP_NUM)
 
-        elif current == '"':
-            return self.string_literal
+            elif current == '"':
+                self.lex_string_literal()
+                yield self.emit(TokenKind.STRING_LITERAL)
 
-        elif self.text.startswith('u8"', self.index):
-            return self.utf8_string_literal
+            elif self.source.startswith('u8"', self.index):
+                # We don't need the first two characters; we just need to know where the string starts and ends.
+                self.index += 2
+                self.lex_string_literal()
+                yield self.emit(TokenKind.STRING_LITERAL)
 
-        elif self.text.startswith('u"', self.index):
-            return self.utf16_string_literal
+            elif self.source.startswith(('u"', 'L"', 'W"'), self.index):
+                # We don't need the first character; we just need to know where the string starts and ends.
+                self.index += 1
+                self.lex_string_literal()
+                yield self.emit(TokenKind.STRING_LITERAL)
 
-        elif self.text.startswith('L"', self.index):
-            return self.wide_string_literal
+            elif current == "'":
+                self.lex_char_const()
+                yield self.emit(TokenKind.CHAR_CONST)
 
-        elif self.text.startswith('W"', self.index):
-            return self.utf32_string_literal
+            elif self.source.startswith(("u'", "L'", "U'"), self.index):
+                # We don't need the first character; we just need to know where the characters start and end.
+                self.index += 1
+                self.lex_char_const()
+                yield self.emit(TokenKind.CHAR_CONST)
 
-        elif current == "'":
-            return self.char_literal
+            elif current in CharSets.identifier_start:
+                # This is a valid identifier already, but try to see if it's longer.
+                self.lex_identifier()
+                yield self.emit(TokenKind.ID)
 
-        elif self.text.startswith("u'", self.index):
-            return self.utf16_char_literal
+            elif current in CharSets.punctuation1:
+                # Puncuation can have different lengths, so verify the exact one.
+                self.lex_punctuation()
+                yield self.emit(PUNCTUATION_TOKEN_MAP[self.source[self.previous : self.index]])
 
-        elif self.text.startswith("L'", self.index):
-            return self.wide_char_literal
+            else:
+                # We have no idea what this is.
+                msg = "Invalid token"
+                raise CSyntaxError(msg, self.get_current_location())
 
-        elif self.text.startswith("U'", self.index):
-            return self.utf32_char_literal
+    def lex_line_comment(self) -> None:
+        """Lex a line comment, which starts with "//"."""
 
-        elif self.is_identifier():
-            return self.identifier
-
-        elif self.is_punctuation():
-            return self.punctuation
-
-        yield None  # Signal the end of the tokens.
-        return None  # Stop the lexing loop.
-
-    def line_comment(self) -> _LexGen:
-        # Skip the comment starter.
-        self.skip(2)
+        self.index += 2
 
         try:
-            self.index = self.text.index("\n", self.index)
+            self.index = self.source.index("\n", self.index)
         except ValueError:
             self.index = self.end
-            yield self.emit(TokenKind.LINE_COMMENT)
+
+        self.reset()
+        self.has_space = True
+
+    def lex_block_comment(self) -> None:
+        """Lex a block comment, which starts with "/*", ends with "*/", and can stretch across multiple lines."""
+
+        self.index += 2
+
+        try:
+            comment_end = self.source.index("*/", self.index)
+        except ValueError as exc:
+            msg = "Unclosed block comment."
+            raise CSyntaxError(msg, self.get_current_location()) from exc
         else:
-            yield self.emit(TokenKind.LINE_COMMENT)
+            self.lineno += self.source.count("\n", self.index, comment_end)
+            self.index = comment_end + 2
 
-            # Skip the comment ender if found.
-            self.skip(1)
+        self.reset()
+        self.has_space = True
 
-        return self.file
+    def lex_newline(self) -> None:
+        """Lex a newline."""
 
-    def block_comment(self) -> _LexGen:
-        # Skip the comment starter.
-        self.skip(2)
+        self.index += 1
+        self.lineno += 1
+        self.reset()
+        self.at_bol = True
+        self.has_space = False
 
-        # Skip the comment-ending if found.
-        try:
-            self.index = self.text.index("*/", self.index)
-        except ValueError as exc:
-            msg = "Unclosed block comment"
-            raise CSyntaxError(msg) from exc
+    def lex_whitespace(self) -> None:
+        """Lex unimportant whitespace."""
 
-        yield self.emit(TokenKind.BLOCK_COMMENT)
+        self.index += 1
+        self.reset()
+        self.has_space = True
 
-        return self.file
+    def lex_numeric_literal(self) -> None:
+        """Lex a somewhat relaxed numeric literal. These will be more specified after preprocessing."""
 
-    def numeric_literal(self): ...
+        self.index += 1
 
-    def string_literal(self) -> _LexGen:
-        # Skip the quote start.
-        self.skip(1)
+        while self.index < self.end:
+            if self.current in "eEpP" and self.peek_with_condition("+-".__contains__):
+                self.index += 2
+            elif self.current in CharSets.alphanumeric or self.current == ".":
+                self.index += 1
+            else:
+                break
 
-        try:
-            self.index = self.text.index('"', self.index)
-        except ValueError as exc:
-            msg = "Unclosed string literal"
-            raise CSyntaxError(msg) from exc
+    def lex_identifier(self) -> None:
+        """Lex an identifier/keyword."""
 
-        yield self.emit(TokenKind.STRING_LITERAL)
+        self.index += 1
 
-        return self.file
+        while self.index < self.end:
+            if self.source[self.index] not in CharSets.identifier_rest:
+                break
+            self.index += 1
 
-    def utf8_string_literal(self): ...
+    def lex_punctuation(self) -> None:
+        """Lex a punctuater."""
 
-    def utf16_string_literal(self): ...
+        # We have to increment by the exact length of the identifier, so we check the longest ones first.
+        if self.source.startswith(CharSets.punctuation3, self.index):
+            self.index += 3
+        elif self.source.startswith(CharSets.punctuation2, self.index):
+            self.index += 2
+        else:
+            self.index += 1
 
-    def wide_string_literal(self): ...
+        if self.source[self.previous : self.index] not in PUNCTUATION_TOKEN_MAP:
+            msg = "Invalid punctuation"
+            raise CSyntaxError(msg, self.get_current_location())
 
-    def utf32_string_literal(self): ...
+    def lex_string_literal(self) -> None:
+        """Lex a string literal, which can be utf-8, utf-16, wide, or utf-32."""
 
-    def char_literal(self): ...
+        self.index += 1
+        self.reset()
+        self.find_quoted_literal_end('"')
 
-    def utf16_char_literal(self): ...
+    def lex_char_const(self) -> None:
+        """Lex a character constant, which can be utf-8, utf-16, wide, or utf-32."""
 
-    def wide_char_literal(self): ...
+        self.index += 1
+        self.reset()
+        self.find_quoted_literal_end("'")
 
-    def utf32_char_literal(self): ...
+    def find_quoted_literal_end(self, quote_char: str) -> None:
+        """Find the other end of a quoted literal based on a given quote character."""
 
-    def identifier(self) -> _LexGen:
-        self.accept(CharSets.identifier_start)
-        self.accept_run(CharSets.identifier_rest)
+        quote_start = self.index
+        quote_end = self.end
 
-        try:
-            tok_type = KEYWORD_TOKEN_MAP[self.current_group]  # pyright: ignore [reportArgumentType]
-        except KeyError:
-            tok_type = TokenKind.ID
+        while self.index < self.end:
+            quote_end = self.source.find(quote_char, self.index)
 
-        yield self.emit(tok_type)
+            if quote_end == -1:
+                msg = "Unclosed string literal."
+                raise CSyntaxError(msg, self.get_current_location())
 
-    def punctuation(self): ...
+            if self.source[quote_end - 1] != "\\":
+                # If the quote wasn't escaped, only then does it count as the end of the quoted literal.
+                break
+
+            self.index = quote_end
+
+        # Newlines break the literal. It must be entirely on one logical line.
+        if self.source.find("\n", quote_start, quote_end) != -1:
+            msg = "Unclosed string literal."
+            raise CSyntaxError(msg, self.get_current_location())
 
     # endregion

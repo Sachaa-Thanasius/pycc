@@ -40,9 +40,8 @@ from __future__ import annotations
 import functools
 import types
 from collections.abc import Iterable, Mapping, MutableMapping
-from typing import Any, TypeVar, Union, cast
 
-from ._compat import TypeAlias
+from ._compat import Any, TypeAlias, Union, cast
 
 
 __all__ = ("EnumMeta", "Enum", "auto", "unique")
@@ -56,7 +55,6 @@ EnumNames: TypeAlias = Union[
     Mapping[str, Any],
 ]
 
-EnumT = TypeVar("EnumT", bound="type[Enum]")
 
 AUTO = object()
 
@@ -195,6 +193,7 @@ class EnumMeta(type):
 
     # Basic testing in a CPython REPL indicates that a class will get garbage-collected regardless of its presence in an
     # external cache, so this should be fine.
+    # FIXME: __members__ on the stdlib Enum is not a callable. We have to match that.
     @functools.cache  # noqa: B019
     def __members__(self) -> types.MappingProxyType[str, Any]:
         return types.MappingProxyType(self._member_map_)
@@ -300,7 +299,7 @@ def auto() -> object:
     return AUTO
 
 
-def unique(cls: EnumT) -> EnumT:
+def unique(cls: type[Enum]) -> type[Enum]:
     """Make sure all enum members have unique values.
 
     Raises
