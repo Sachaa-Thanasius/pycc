@@ -10,8 +10,15 @@ between the various node types.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Optional, Union
+from collections import deque
+from collections.abc import Generator
+from typing import TYPE_CHECKING, Any, ClassVar, Optional, Union
 
+
+if TYPE_CHECKING:
+    from types import GeneratorType
+else:
+    GeneratorType = type(_ for _ in ())
 
 __all__ = ("AST", "Module", "Type", "Constructor", "Field", "Sum", "Product", "NodeVisitor")
 
@@ -19,12 +26,16 @@ __all__ = ("AST", "Module", "Type", "Constructor", "Field", "Sum", "Product", "N
 class AST:
     __slots__ = ()
 
+    _fields: ClassVar[tuple[str, ...]] = ()
+
     def __repr__(self) -> str:
         raise NotImplementedError
 
 
 class Module(AST):
     __slots__ = ("name", "dfns", "types")
+
+    _fields = ("dfns",)
 
     def __init__(self, name: str, dfns: list[Type]):
         self.name = name
@@ -37,6 +48,8 @@ class Module(AST):
 
 class Type(AST):
     __slots__ = ("name", "value")
+
+    _fields = ("value",)
 
     def __init__(self, name: str, value: Union[Product, Sum]):
         self.name = name
@@ -57,8 +70,42 @@ class Constructor(AST):
         return f"{self.__class__}({self.name}, {self.fields})"
 
 
+class Sum(AST):
+    __slots__ = ("types", "attributes")
+
+    _fields = ("types",)
+
+    def __init__(self, types: list[Constructor], attributes: Optional[list[Field]] = None):
+        self.types = types
+        self.attributes = attributes or []
+
+    def __repr__(self):
+        if self.attributes:
+            return f"{self.__class__}({self.types}, {self.attributes})"
+        else:
+            return f"{self.__class__}({self.types})"
+
+
+class Product(AST):
+    __slots__ = ("fields", "attributes")
+
+    _fields = ("fields",)
+
+    def __init__(self, fields: list[Field], attributes: Optional[list[Field]] = None):
+        self.fields = fields
+        self.attributes = attributes or []
+
+    def __repr__(self):
+        if self.attributes:
+            return f"{self.__class__}({self.fields}, {self.attributes})"
+        else:
+            return f"{self.__class__}({self.fields})"
+
+
 class Field(AST):
     __slots__ = ("type", "name", "seq", "opt")
+
+    _fields = ()
 
     def __init__(self, type, name: Optional[str] = None, seq: Optional[bool] = False, opt: Optional[bool] = False):
         self.type = type
@@ -90,51 +137,70 @@ class Field(AST):
             return f"{self.__class__}({self.type}, {self.name}{extra})"
 
 
-class Sum(AST):
-    def __init__(self, types: list[Constructor], attributes: Optional[list[Field]] = None):
-        self.types = types
-        self.attributes = attributes or []
+def iter_child_nodes(node: AST) -> Generator[AST]:
+    for field in node._fields:
+        potential_subnode = getattr(node, field)
 
-    def __repr__(self):
-        if self.attributes:
-            return f"{self.__class__}({self.types}, {self.attributes})"
-        else:
-            return f"{self.__class__}({self.types})"
+        if isinstance(potential_subnode, AST):
+            yield potential_subnode
+
+        elif isinstance(potential_subnode, list):
+            for subsub in potential_subnode:  # pyright: ignore [reportUnknownVariableType]
+                if isinstance(subsub, AST):
+                    yield subsub
 
 
-class Product(AST):
-    def __init__(self, fields: list[Field], attributes: Optional[list[Field]] = None):
-        self.fields = fields
-        self.attributes = attributes or []
+def walk(node: AST) -> Generator[AST]:
+    """Walk through an AST, breadth first."""
 
-    def __repr__(self):
-        if self.attributes:
-            return f"{self.__class__}({self.fields}, {self.attributes})"
-        else:
-            return f"{self.__class__}({self.fields})"
+    stack: deque[AST] = deque([node])
+    while stack:
+        curr_node = stack.popleft()
+        stack.extend(iter_child_nodes(curr_node))
+        yield curr_node
 
 
 class NodeVisitor:
-    """Generic tree visitor for the meta-AST that describes ASDL.
+    """Generic tree visitor for the meta-AST that describes ASDL. This can be used by emitters."""
 
-    This can be used by emitters. Note that this visitor does not provide a generic visit method, so a
-    subclass needs to define visit methods from visitModule to as deep as the
-    interesting node.
-    """
+    def _visit(self, node: AST) -> Generator[Any, Any, Any]:
+        """Wrapper for visit methods to ensure visit() only deals with generators."""
 
-    def __init__(self):
-        self.cache: dict[type[AST], Optional[Callable[..., Any]]] = {}
+        result: Any = getattr(self, f"visit_{node.__class__.__name__}", self.generic_visit)(node)
+        if isinstance(result, GeneratorType):
+            result = yield from result
+        return result
 
-    def visit(self, obj: AST, *args: Any) -> Any:
-        klass = obj.__class__
-        meth = self.cache.get(klass)
-        if meth is None:
-            methname = f"visit_{klass.__name__}"
-            meth = getattr(self, methname, None)
-            self.cache[klass] = meth
-        if meth:
+    def visit(self, node: AST) -> Any:
+        """Visit a node."""
+
+        stack: deque[Generator[Any, Any, Any]] = deque([self._visit(node)])
+        result: Any = None
+        exception: Optional[BaseException] = None
+
+        while stack:
             try:
-                meth(obj, *args)
-            except Exception as e:
-                print(f"Error visiting {obj!r}: {e}")
-                raise
+                if exception is not None:
+                    node = stack[-1].throw(exception)
+                else:
+                    node = stack[-1].send(result)
+            except StopIteration as exc:  # noqa: PERF203
+                stack.pop()
+                result = exc.value
+            except BaseException as exc:  # noqa: BLE001
+                # Manually propogate the exception up the stack of generators.
+                stack.pop()
+                exception = exc
+            else:
+                stack.append(self._visit(node))
+                result = None
+
+        if exception is not None:
+            raise exception
+        else:
+            return result
+
+    def generic_visit(self, node: AST) -> Generator[AST, Any, Any]:
+        """Called if no explicit visitor function exists for a node."""
+
+        yield from iter_child_nodes(node)

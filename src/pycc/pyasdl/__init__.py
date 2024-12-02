@@ -21,13 +21,12 @@
 # -------------------------------------------------------------------------------
 from __future__ import annotations
 
-import re
 from collections.abc import Generator
-from enum import Enum, auto
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
-from .ast import Constructor, Field, Module, NodeVisitor, Product, Sum, Type
-from .tokenize import *
+from .ast import AST, Constructor, Field, Module, NodeVisitor, Product, Sum, Type
+from .errors import ASDLSyntaxError
+from .tokenize import Token, TokenKind, tokenize_asdl
 
 
 __all__ = [
@@ -52,39 +51,30 @@ class Check(NodeVisitor):
         self.cons: dict[str, str] = {}
         self.errors: int = 0
         self.types: dict[str, list[str]] = {}
+        self.current_type_name: str = ""
 
-    def visit_Module(self, mod: Module) -> None:
-        for dfn in mod.dfns:
-            self.visit(dfn)
+    def visit_Type(self, node: Type) -> Generator[AST, Any, Any]:
+        self.current_type_name = str(node.name)
+        yield from self.generic_visit(node)
 
-    def visit_Type(self, type: Type) -> None:
-        self.visit(type.value, str(type.name))
+    def visit_Constructor(self, node: Constructor) -> Generator[AST, Any, Any]:
+        parent_name = self.current_type_name
+        self.current_type_name = str(node.name)
 
-    def visit_Sum(self, sum: Sum, name: str) -> None:
-        for t in sum.types:
-            self.visit(t, name)
-
-    def visit_Constructor(self, cons: Constructor, name: str) -> None:
-        key = str(cons.name)
-        conflict = self.cons.get(key)
-        if conflict is None:
-            self.cons[key] = name
+        try:
+            conflict = self.cons[self.current_type_name]
+        except KeyError:
+            self.cons[self.current_type_name] = parent_name
         else:
-            print(f"Redefinition of constructor {key}")
-            print(f"Defined in {conflict} and {name}")
+            print(f"Redefinition of constructor {self.current_type_name}")
+            print(f"Defined in {conflict} and {parent_name}")
             self.errors += 1
 
-        for f in cons.fields:
-            self.visit(f, key)
+        yield from self.generic_visit(node)
 
     def visit_Field(self, field: Field, name: str) -> None:
         key = str(field.type)
-        l = self.types.setdefault(key, [])
-        l.append(name)
-
-    def visit_Product(self, prod: Product, name: str) -> None:
-        for f in prod.fields:
-            self.visit(f, name)
+        self.types.setdefault(key, []).append(name)
 
 
 def check(mod: Module) -> bool:
@@ -115,133 +105,6 @@ def parse(filename: str) -> Module:
     with open(filename, encoding="utf-8") as f:
         parser = ASDLParser()
         return parser.parse(f.read())
-
-
-# Types for describing tokens in an ASDL specification.
-class TokenKind(Enum):
-    """TokenKind provides a scope for enumerated token kinds."""
-
-    # fmt: off
-    ConstructorId   = auto()
-    TypeId          = auto()
-    Equals          = auto()
-    Comma           = auto()
-    Question        = auto()
-    Pipe            = auto()
-    Asterisk        = auto()
-    LParen          = auto()
-    RParen          = auto()
-    LBrace          = auto()
-    RBrace          = auto()
-    # fmt: on
-
-
-operator_table = {
-    "=": TokenKind.Equals,
-    ",": TokenKind.Comma,
-    "?": TokenKind.Question,
-    "|": TokenKind.Pipe,
-    "(": TokenKind.LParen,
-    ")": TokenKind.RParen,
-    "*": TokenKind.Asterisk,
-    "{": TokenKind.LBrace,
-    "}": TokenKind.RBrace,
-}
-
-
-class Token:
-    __slots__ = ("kind", "value", "lineno")
-
-    def __init__(self, kind: TokenKind, value: str, lineno: int):
-        self.kind = kind
-        self.value = value
-        self.lineno = lineno
-
-    def __repr__(self):
-        return f"{self.__class__}(kind={self.kind}, value={self.value}, lineno={self.lineno})"
-
-
-class ASDLSyntaxError(Exception):
-    def __init__(self, msg: str, lineno: Optional[int] = None):
-        self.msg = msg
-        self.lineno = lineno or "<unknown>"
-
-    def __str__(self):
-        return f"Syntax error on line {self.lineno}: {self.msg}"
-
-
-def get_identifier_end(buf: str, start: int) -> int:
-    for i in range(start, len(buf)):
-        if not (buf[i].isalpha() or buf == "_"):
-            return i
-
-    return start + 1
-
-
-def tokenize_asdl2(buffer: str) -> Generator[Token]:
-    """Tokenize the given buffer. Yield Token objects."""
-
-    for lineno, line in enumerate(buffer.splitlines(), start=1):
-        colno = 0
-        while colno < len(line):
-            char = line[colno]
-
-            # Discard whitespace.
-            if char.isspace():
-                colno += 1
-                continue
-
-            # Capture identifiers.
-            elif char.isalpha():
-                id_start = colno
-                colno = get_identifier_end(line, id_start)
-
-                if char.isupper():
-                    id_kind = TokenKind.ConstructorId
-                else:
-                    id_kind = TokenKind.TypeId
-
-                yield Token(id_kind, line[id_start:colno], lineno)
-
-            # Discard the commented section of a line.
-            elif line.startswith("--", colno):
-                break
-
-            # Capture operators.
-            elif (op_kind := operator_table.get(char)) is not None:
-                # Operators can only be 1 character long.
-                colno += 1
-                yield Token(op_kind, char, lineno)
-
-            # Panic on unknowns.
-            else:
-                msg = f"Invalid operator {char}"
-                raise ASDLSyntaxError(msg, lineno) from None
-
-
-def tokenize_asdl(buf: str) -> Generator[Token]:
-    """Tokenize the given buffer. Yield Token objects."""
-
-    for lineno, line in enumerate(buf.splitlines(), start=1):
-        for m in re.finditer(r"\s*(\w+|--.*|.)", line.strip()):
-            c = m.group(1)
-            if c[0].isalpha():
-                # Some kind of identifier
-                if c[0].isupper():
-                    yield Token(TokenKind.ConstructorId, c, lineno)
-                else:
-                    yield Token(TokenKind.TypeId, c, lineno)
-            elif c[:2] == "--":
-                # Comment
-                break
-            else:
-                # Operators
-                try:
-                    op_kind = operator_table[c]
-                except KeyError:
-                    msg = f"Invalid operator {c}"
-                    raise ASDLSyntaxError(msg, lineno) from None
-                yield Token(op_kind, c, lineno)
 
 
 class ASDLParser:

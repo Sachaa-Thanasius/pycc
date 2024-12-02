@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 
-__all__ = ("TYPE_CHECKING", "Any", "Self", "TypeAlias", "Union", "cast")
-
 TYPE_CHECKING = False
 
+if TYPE_CHECKING:
+    from types import GenericAlias
+else:
+    GenericAlias = type(list[int])
 
-class _PlaceholderGenericAlias(type(list[int])):
+__all__ = ("TYPE_CHECKING", "Any", "Self", "TypeAlias", "Union", "cast")
+
+
+class _PlaceholderGenericAlias(GenericAlias):
     def __repr__(self) -> str:
         name = f'typing.{super().__repr__().rpartition(".")[2]}'
         return f"<import placeholder for {name}>"
@@ -23,7 +28,7 @@ class _PlaceholderMeta(type):
 
 class _PlaceholderGenericMeta(_PlaceholderMeta):
     def __getitem__(self, item: object) -> _PlaceholderGenericAlias:
-        return _PlaceholderGenericAlias(self, item)  # pyright: ignore [reportCallIssue]
+        return _PlaceholderGenericAlias(self, item)
 
 
 if TYPE_CHECKING:

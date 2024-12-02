@@ -101,8 +101,10 @@ extend-ignore = [
     "ISC002",
 
     # ---- Project-specific rules
-    "RET505", # Returns in both parts of if-else can be more readable.
-    "SIM108", # if-else instead of a ternary can be more readable.
+    # Readability
+    "RET505", # Returns in both parts of if-else.
+    "RET506", # Raise within an if-else.
+    "SIM108", # if-else instead of a ternary.
 ]
 unfixable = [
     "ERA", # Prevent unlikely erroneous deletion.
