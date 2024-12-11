@@ -14,13 +14,13 @@ import string
 from collections.abc import Callable, Generator
 from typing import TYPE_CHECKING, Any, Optional
 
-from ._compat import TypeAlias
+from pycc._compat import TypeAlias
 
 
 if TYPE_CHECKING:
     from enum import Enum, auto
 else:
-    from ._enum import Enum, auto
+    from pycc._enum import Enum, auto
 
 
 LexGen: TypeAlias = Generator[Optional["Token"], Any, Optional["SubLexer"]]
@@ -49,7 +49,7 @@ class Token:
 
     __slots__ = ("type", "value")
 
-    def __init__(self, type: TokenType, value: str):
+    def __init__(self, type: TokenType, value: str):  # noqa: A002
         self.type = type
         self.value = value
 
@@ -130,9 +130,6 @@ class TemplateLexer:
 
         return self.text[self.index] if self.index < len(self.text) else None
 
-    @property
-    def current_group(self) -> Optional[str]:
-        return self.text[self.previous : self.index] if not self.is_eof else None
 
     def reset(self) -> None:
         """Ignore the current token."""
@@ -228,7 +225,6 @@ class TemplateLexer:
         # Reached EOF
         msg = "Unterminated action"
         raise LexerError(msg)
-        return None
 
     def number(self) -> LexGen:
         # Optional sign before the number

@@ -4,7 +4,7 @@ from pycc.lexer import Lexer
 
 
 test_source = """\
-int `main(void) {
+int main(void) {
     return 1;
 }
 """

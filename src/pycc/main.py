@@ -1,4 +1,5 @@
 # ruff: noqa: T201
+
 import sys
 from collections.abc import Sequence
 

@@ -8,7 +8,7 @@ if TYPE_CHECKING:
 else:
     GenericAlias = type(list[int])
 
-__all__ = ("TYPE_CHECKING", "Any", "Self", "TypeAlias", "Union", "cast")
+__all__ = ("TYPE_CHECKING", "Any", "Optional", "Self", "TypeAlias", "Union", "cast")
 
 
 class _PlaceholderGenericAlias(GenericAlias):
@@ -32,14 +32,16 @@ class _PlaceholderGenericMeta(_PlaceholderMeta):
 
 
 if TYPE_CHECKING:
-    from typing import Any, Union, cast
+    from typing import Any, Optional, Union, cast
 
     from typing_extensions import Self, TypeAlias
 else:
     Any = _PlaceholderMeta.for_typing_name("Any")
+    Optional = _PlaceholderGenericMeta.for_typing_name("Optional")
+    Union = _PlaceholderGenericMeta.for_typing_name("Union")
+
     Self = _PlaceholderMeta.for_typing_name("Self")
     TypeAlias = _PlaceholderMeta.for_typing_name("TypeAlias")
-    Union = _PlaceholderGenericMeta.for_typing_name("Union")
 
     def cast(typ: Any, val: Any) -> Any:
         return val
