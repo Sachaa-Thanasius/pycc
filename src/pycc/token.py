@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from itertools import chain
-
 from ._compat import TYPE_CHECKING
 
 
@@ -12,6 +9,7 @@ if TYPE_CHECKING:
     from enum import Enum, auto
 else:
     from ._enum import Enum, auto
+
 
 __all__ = ("TokenKind", "KEYWORD_TOKEN_MAP", "PUNCTUATION_TOKEN_MAP", "Token")
 
@@ -21,7 +19,7 @@ class TokenKind(Enum):
 
     # fmt: off
 
-    # Keywords (see keyword-token map)
+    # Keywords (see KEYWORD_TOKEN_MAP)
     AUTO                = auto()
     BREAK               = auto()
     CASE                = auto()
@@ -59,12 +57,14 @@ class TokenKind(Enum):
     WHILE               = auto()
     INT128__            = auto()
 
-    # New keywords (see keyword-token map)
+    # New keywords
     ALIGNAS_            = auto()
     ALIGNOF_            = auto()
     ATOMIC_             = auto()
     BOOL_               = auto()
     COMPLEX_            = auto()
+    GENERIC_            = auto()
+    IMAGINARY_          = auto()
     NORETURN_           = auto()
     PRAGMA_             = auto()
     STATIC_ASSERT_      = auto()
@@ -97,71 +97,73 @@ class TokenKind(Enum):
     U16STRING_LITERAL   = auto()
     U32STRING_LITERAL   = auto()
 
-    # Operators
-    PLUS                = auto()    # +
-    MINUS               = auto()    # -
-    TIMES               = auto()    # *
-    DIVIDE              = auto()    # /
-    MOD                 = auto()    # %
-    OR                  = auto()    # |
-    AND                 = auto()    # &
-    NOT                 = auto()    # ~
-    XOR                 = auto()    # ^
-    LSHIFT              = auto()    # <<
-    RSHIFT              = auto()    # >>
-    LOR                 = auto()    # ||
-    LAND                = auto()    # &&
-    LNOT                = auto()    # !
-    LT                  = auto()    # <
-    GT                  = auto()    # >
-    LE                  = auto()    # <=
-    GE                  = auto()    # >=
-    EQ                  = auto()    # ==
-    NE                  = auto()    # !=
+    # Operators (see PUNCTUATION_TOKEN_MAP)
+    PLUS                = auto()
+    MINUS               = auto()
+    TIMES               = auto()
+    DIVIDE              = auto()
+    MOD                 = auto()
+    OR                  = auto()
+    AND                 = auto()
+    NOT                 = auto()
+    XOR                 = auto()
+    LSHIFT              = auto()
+    RSHIFT              = auto()
+    LOR                 = auto()
+    LAND                = auto()
+    LNOT                = auto()
+    LT                  = auto()
+    GT                  = auto()
+    LE                  = auto()
+    GE                  = auto()
+    EQ                  = auto()
+    NE                  = auto()
 
     # Assignment operators
-    EQUALS              = auto()    # =
-    TIMESEQUAL          = auto()    # *=
-    DIVEQUAL            = auto()    # /=
-    MODEQUAL            = auto()    # %=
-    PLUSEQUAL           = auto()    # +=
-    MINUSEQUAL          = auto()    # -=
-    LSHIFTEQUAL         = auto()    # <<=
-    RSHIFTEQUAL         = auto()    # >>=
-    ANDEQUAL            = auto()    # &=
-    OREQUAL             = auto()    # |=
-    XOREQUAL            = auto()    # ^=
+    EQUALS              = auto()
+    TIMESEQUAL          = auto()
+    DIVEQUAL            = auto()
+    MODEQUAL            = auto()
+    PLUSEQUAL           = auto()
+    MINUSEQUAL          = auto()
+    LSHIFTEQUAL         = auto()
+    RSHIFTEQUAL         = auto()
+    ANDEQUAL            = auto()
+    OREQUAL             = auto()
+    XOREQUAL            = auto()
 
     # Increment/decrement
-    PLUSPLUS            = auto()    # ++
-    MINUSMINUS          = auto()    # --
+    PLUSPLUS            = auto()
+    MINUSMINUS          = auto()
 
     # Structure dereference
-    ARROW               = auto()    # ->
+    ARROW               = auto()
 
     # Conditional operator
-    CONDOP              = auto()    # ?
+    CONDOP              = auto()
 
     # Delimiters
-    LPAREN              = auto()    # (
-    RPAREN              = auto()    # )
-    LBRACKET            = auto()    # [
-    RBRACKET            = auto()    # ]
-    COMMA               = auto()    # ,
-    PERIOD              = auto()    # .
-    SEMICOLON           = auto()    # ;
-    COLON               = auto()    # :
+    LPAREN              = auto()
+    RPAREN              = auto()
+    LBRACKET            = auto()
+    RBRACKET            = auto()
+    COMMA               = auto()
+    PERIOD              = auto()
+    SEMICOLON           = auto()
+    COLON               = auto()
 
     # Scope delimiters
-    LBRACE              = auto()    # {
-    RBRACE              = auto()    # }
+    LBRACE              = auto()
+    RBRACE              = auto()
 
     # Variadic parameter specifier
-    ELLIPSIS            = auto()    # ...
+    ELLIPSIS            = auto()
 
-    # Pre-processor
+    # Preprocessor
     PP_NUM              = auto()
-    PP_OCTO             = auto()    # #
+    PP_OCTO             = auto()
+    PP_OCTOOCTO         = auto()
+
     PP_PRAGMA           = auto()
     PP_PRAGMASTR        = auto()
 
@@ -189,7 +191,7 @@ KEYWORD_TOKEN_MAP = {
     "inline":           TokenKind.INLINE,
     "int":              TokenKind.INT,
     "long":             TokenKind.LONG,
-    "offsetof":         TokenKind.OFFSETOF,
+    "offsetof":         TokenKind.OFFSETOF,  # NOTE: Not in the C11 spec?
     "register":         TokenKind.REGISTER,
     "restrict":         TokenKind.RESTRICT,
     "return":           TokenKind.RETURN,
@@ -213,11 +215,14 @@ KEYWORD_TOKEN_MAP = {
     "_Atomic":          TokenKind.ATOMIC_,
     "_Bool":            TokenKind.BOOL_,
     "_Complex":         TokenKind.COMPLEX_,
+    "_Generic":         TokenKind.GENERIC_,
+    "_Imaginary":       TokenKind.IMAGINARY_,
     "_Noreturn":        TokenKind.NORETURN_,
     "_Pragma":          TokenKind.PRAGMA_,
     "_Static_assert":   TokenKind.STATIC_ASSERT_,
     "_Thread_local":    TokenKind.THREAD_LOCAL_,
 }  # fmt: skip
+
 
 PUNCTUATION_TOKEN_MAP = {
     # Operators
@@ -278,6 +283,10 @@ PUNCTUATION_TOKEN_MAP = {
     # Scope delimiters
     "{":    TokenKind.LBRACE,
     "}":    TokenKind.RBRACE,
+
+    # Preprocessor
+    "#":    TokenKind.PP_OCTO,
+    "##":   TokenKind.PP_OCTOOCTO,
 }  # fmt: skip
 
 
@@ -292,31 +301,37 @@ class Token:
         String value, as taken from the input.
     """
 
-    __slots__ = ("kind", "value", "length", "filename", "at_bol", "has_space")
+    __slots__ = ("kind", "value", "lineno", "col_offset", "filename", "at_bol", "has_space")
 
     def __init__(  # noqa: PLR0913
         self,
         kind: TokenKind,
         value: str,
-        start: int,
-        end: int,
+        lineno: int,
+        col_offset: int,
         filename: str,
         at_bol: bool,
         has_space: bool,
     ) -> None:
         self.kind = kind
         self.value = value
-        self.length = start - end
+        self.lineno = lineno
+        self.col_offset = col_offset
         self.filename = filename
         self.at_bol = at_bol
         self.has_space = has_space
 
+    @property
+    def end_lineno(self) -> int:
+        return self.lineno + self.value.count("\n")
+
+    @property
+    def end_col_offset(self) -> int:
+        return self.col_offset + len(self.value)
+
     def __repr__(self) -> str:
-        return f"{type(self).__name__}(type={self.kind!r}, value={self.value!r})"
-
-
-def _charify_inclusive_ranges(*ranges: tuple[int, int]) -> Iterable[str]:
-    return chain.from_iterable(map(chr, range(first, second + 1)) for first, second in ranges)
+        attrs = ("kind", "value", "lineno", "col_offset", "end_lineno", "end_col_offset")
+        return f'{type(self).__name__}({", ".join(f"{attr}={getattr(self, attr)!r}" for attr in attrs)})'
 
 
 class CharSets:
@@ -333,73 +348,78 @@ class CharSets:
 
     alphanumeric = ascii_letters + digits
 
-    identifier_start = ascii_letters + "".join(
-        chain(
-            ("_", "$", "\u00a8", "\u00aa", "\u00ad", "\u00af"),
-            _charify_inclusive_ranges(
-                (0x00B2, 0x00B5),
-                (0x00B7, 0x00BA),
-                (0x00BC, 0x00BE),
-                (0x00C0, 0x00D6),
-                (0x00D8, 0x00F6),
-                (0x00F8, 0x00FF),
-                (0x0100, 0x02FF),
-                (0x0370, 0x167F),
-                (0x1681, 0x180D),
-                (0x180F, 0x1DBF),
-                (0x1E00, 0x1FFF),
-                (0x200B, 0x200D),
-                (0x202A, 0x202E),
-                (0x203F, 0x2040),
-                (0x2054, 0x2054),
-                (0x2060, 0x206F),
-                (0x2070, 0x20CF),
-                (0x2100, 0x218F),
-                (0x2460, 0x24FF),
-                (0x2776, 0x2793),
-                (0x2C00, 0x2DFF),
-                (0x2E80, 0x2FFF),
-                (0x3004, 0x3007),
-                (0x3021, 0x302F),
-                (0x3031, 0x303F),
-                (0x3040, 0xD7FF),
-                (0xF900, 0xFD3D),
-                (0xFD40, 0xFDCF),
-                (0xFDF0, 0xFE1F),
-                (0xFE30, 0xFE44),
-                (0xFE47, 0xFFFD),
-                (0x10000, 0x1FFFD),
-                (0x20000, 0x2FFFD),
-                (0x30000, 0x3FFFD),
-                (0x40000, 0x4FFFD),
-                (0x50000, 0x5FFFD),
-                (0x60000, 0x6FFFD),
-                (0x70000, 0x7FFFD),
-                (0x80000, 0x8FFFD),
-                (0x90000, 0x9FFFD),
-                (0xA0000, 0xAFFFD),
-                (0xB0000, 0xBFFFD),
-                (0xC0000, 0xCFFFD),
-                (0xD0000, 0xDFFFD),
-                (0xE0000, 0xEFFFD),
-            ),
-        )
-    )
-
-    identifier_rest = (
-        identifier_start
-        + digits
-        + "".join(
-            _charify_inclusive_ranges(
-                (0x0300, 0x036F),
-                (0x1DC0, 0x1DFF),
-                (0x20D0, 0x20FF),
-                (0xFE20, 0xFE2F),
-            )
-        )
-    )
-
     # TODO: Do we need all of these single ones?
     punctuation1 = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"""
     punctuation2 = tuple(chars for chars in PUNCTUATION_TOKEN_MAP if len(chars) == 2)
     punctuation3 = tuple(chars for chars in PUNCTUATION_TOKEN_MAP if len(chars) == 3)
+
+    _identifier_start_ranges = (
+        ("\u00b2", "\u00b5"),
+        ("\u00b7", "\u00ba"),
+        ("\u00bc", "\u00be"),
+        ("\u00c0", "\u00d6"),
+        ("\u00d8", "\u00f6"),
+        ("\u00f8", "\u00ff"),
+        ("\u0100", "\u02ff"),
+        ("\u0370", "\u167f"),
+        ("\u1681", "\u180d"),
+        ("\u180f", "\u1dbf"),
+        ("\u1e00", "\u1fff"),
+        ("\u200b", "\u200d"),
+        ("\u202a", "\u202e"),
+        ("\u203f", "\u2040"),
+        ("\u2054", "\u2054"),
+        ("\u2060", "\u206f"),
+        ("\u2070", "\u20cf"),
+        ("\u2100", "\u218f"),
+        ("\u2460", "\u24ff"),
+        ("\u2776", "\u2793"),
+        ("\u2c00", "\u2dff"),
+        ("\u2e80", "\u2fff"),
+        ("\u3004", "\u3007"),
+        ("\u3021", "\u302f"),
+        ("\u3031", "\u303f"),
+        ("\u3040", "\ud7ff"),
+        ("\uf900", "\ufd3d"),
+        ("\ufd40", "\ufdcf"),
+        ("\ufdf0", "\ufe1f"),
+        ("\ufe30", "\ufe44"),
+        ("\ufe47", "\ufffd"),
+        ("\U00010000", "\U0001fffd"),
+        ("\U00020000", "\U0002fffd"),
+        ("\U00030000", "\U0003fffd"),
+        ("\U00040000", "\U0004fffd"),
+        ("\U00050000", "\U0005fffd"),
+        ("\U00060000", "\U0006fffd"),
+        ("\U00070000", "\U0007fffd"),
+        ("\U00080000", "\U0008fffd"),
+        ("\U00090000", "\U0009fffd"),
+        ("\U000a0000", "\U000afffd"),
+        ("\U000b0000", "\U000bfffd"),
+        ("\U000c0000", "\U000cfffd"),
+        ("\U000d0000", "\U000dfffd"),
+        ("\U000e0000", "\U000efffd"),
+    )
+
+    @classmethod
+    def can_start_identifier(cls, char: str, /) -> bool:
+        return (
+            (char in cls.ascii_letters)
+            or (char in "_$\u00a8\u00aa\u00ad\u00af")
+            or any(lower <= char <= upper for lower, upper in cls._identifier_start_ranges)
+        )
+
+    _identifier_end_ranges = (
+        ("\u0300", "\u036f"),
+        ("\u1dc0", "\u1dff"),
+        ("\u20d0", "\u20ff"),
+        ("\ufe20", "\ufe2f"),
+    )
+
+    @classmethod
+    def can_end_identifier(cls, char: str, /) -> bool:
+        return (
+            cls.can_start_identifier(char)
+            or char in cls.digits
+            or any(lower <= char <= upper for lower, upper in cls._identifier_end_ranges)
+        )

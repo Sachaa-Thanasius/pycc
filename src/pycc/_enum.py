@@ -37,11 +37,15 @@ and related code.
 
 from __future__ import annotations
 
-import functools
-import types
 from collections.abc import Iterable, Mapping, MutableMapping
 
-from ._compat import Any, TypeAlias, Union, cast
+from ._compat import TYPE_CHECKING, Any, TypeAlias, Union, cast
+
+
+if TYPE_CHECKING:
+    from types import MappingProxyType
+else:
+    MappingProxyType = type(type.__dict__)
 
 
 __all__ = ("EnumMeta", "Enum", "auto", "unique")
@@ -56,7 +60,7 @@ EnumNames: TypeAlias = Union[
 ]
 
 
-AUTO = object()
+_AUTO = object()
 
 
 class EnumMember:
@@ -154,7 +158,7 @@ class EnumMeta(type):
             if (not _is_descriptor(value) and not name.startswith("_"))
         )
         for index, (mem_name, mem_value) in enumerate(members_iter):
-            if mem_value is AUTO:
+            if mem_value is _AUTO:
                 if custom_auto is None:
                     last_auto += 1
                     mem_value = last_auto  # noqa: PLW2901
@@ -191,12 +195,9 @@ class EnumMeta(type):
         for mem_value in self._member_map_.values():
             mem_value._cls = self
 
-    # Basic testing in a CPython REPL indicates that a class will get garbage-collected regardless of its presence in an
-    # external cache, so this should be fine.
-    # FIXME: __members__ on the stdlib Enum is not a callable. We have to match that.
-    @functools.cache  # noqa: B019
-    def __members__(self) -> types.MappingProxyType[str, Any]:
-        return types.MappingProxyType(self._member_map_)
+    @property
+    def __members__(self) -> MappingProxyType[str, Any]:
+        return MappingProxyType(self._member_map_)
 
     def __repr__(self) -> str:
         return f"<enum {self.__name__!r}>"
@@ -296,7 +297,7 @@ class Enum(metaclass=EnumMeta):
 def auto() -> object:
     """Specify that the member should be an auto-incremented int."""
 
-    return AUTO
+    return _AUTO
 
 
 def unique(cls: type[Enum]) -> type[Enum]:
