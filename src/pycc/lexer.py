@@ -93,6 +93,8 @@ class Lexer:
         The index of the current character in the given source.
     end: int
         The length of the entire source.
+    lineno: int
+        The line number currently being parsed of the source. Starts at 1.
     at_bol: bool
         Whether the token being processed is at the beginning of a line.
     has_space: bool
@@ -108,7 +110,7 @@ class Lexer:
     at_bol: bool
     has_space: bool
 
-    def __init__(self, source: str, filename: str) -> None:
+    def __init__(self, source: str, filename: str):
         self.source = _replace_line_continuations(_canonicalize_newlines(source))
         self.filename = filename
         self.previous = 0

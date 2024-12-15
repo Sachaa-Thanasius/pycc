@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "pycc"
 version = "0.0.0"
-description = "An experimental C compiler in Python."
+description = "An attempt at a C parser in Python."
 requires-python = ">=3.9"
 license = "MIT"
 readme = { file = "README.rst", content-type = "text/x-rst" }
@@ -66,7 +66,7 @@ select = [
     "RET",
     "SIM",
     "TID",
-    "PTH",
+    # "PTH",  # os.path is a better fit here for performance reasons.
     "ERA",
     "PL",
     "TRY",

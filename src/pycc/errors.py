@@ -1,10 +1,42 @@
-"""Custom exceptions related to the parser."""
+"""Custom exceptions and warnings related to the parser."""
 
-__all__ = ("CSyntaxError",)
+import warnings
+
+from ._compat import Self
+from .token import Token
+
+
+__all__ = ("CSyntaxError", "CSyntaxWarning")
 
 
 class CSyntaxError(Exception):
-    """Exception raised when attempting to lex invalid C syntax."""
+    """Exception raised when a fatal issue is encountered while parsing C.
+
+    Parameters
+    ----------
+    msg: str
+        The exception message.
+    location: tuple[str, str, int, int, int]
+        Details about the text for which the error occured, including the filename, line text, line number, column
+        offset, and column ending.
+
+    Attributes
+    ----------
+    msg: str
+        The exception message.
+    filename: str
+        The name of the file the error occured in.
+    text: str
+        The source code involved with the error.
+    lineno: int
+        The line number in the file that the error occurred at. This is 1-indexed.
+    offset: int
+        The column in the line where the error occurred.
+
+    Notes
+    -----
+    The implementation and documentation of this exception is based off of Python's builtin SyntaxError.
+    """
 
     msg: str
     filename: str
@@ -13,7 +45,7 @@ class CSyntaxError(Exception):
     offset: int
     end_offset: int
 
-    def __init__(self, msg: str, location: tuple[str, str, int, int, int]) -> None:
+    def __init__(self, msg: str, location: tuple[str, str, int, int, int]):
         super().__init__()
         self.msg = msg
         self.filename, self.text, self.lineno, self.offset, self.end_offset = location
@@ -27,3 +59,17 @@ class CSyntaxError(Exception):
             f'  {offset * " "}{length * "^"}\n'
             f"{self.__class__.__name__}: {self.msg}"
         )
+
+    @classmethod
+    def from_token(cls, msg: str, token: Token, /) -> Self:
+        with open(token.filename, encoding="utf-8") as fp:
+            line_text = next(line for i, line in enumerate(fp, start=1) if i == token.lineno)
+        return cls(msg, (token.filename, line_text, token.lineno, token.col_offset, token.end_col_offset))
+
+
+class CSyntaxWarning(Warning):
+    """Category for warnings related to issues encountered while parsing C."""
+
+
+def warn_from_token(token: Token) -> None:
+    warnings.warn_explicit("Extra tokens.", CSyntaxWarning, token.filename, token.lineno)
