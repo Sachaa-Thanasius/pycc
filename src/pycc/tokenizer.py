@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Generator, Sequence
 
-from ._compat import Optional
+from ._compat import Optional, Self
 from .errors import CSyntaxError
 from .token import PUNCTUATION_TOKEN_MAP, CharSets, Token, TokenKind
 
 
-__all__ = ("Lexer",)
+__all__ = ("Tokenizer",)
 
 
 def _seq_indices(
@@ -51,40 +51,47 @@ def _canonicalize_newlines(source: str, /) -> str:
 def _replace_line_continuations(source: str, /) -> str:
     """Remove line continuations while keeping logical and physical line numbers synced via extra newlines."""
 
-    line_continuation_count = 0
+    line_cont_count = 0
     fixed_lines: list[str] = []
 
     for line in source.splitlines(keepends=True):
         if line.endswith("\\\n"):
             # Discard the line continuation characters.
             fixed_lines.append(line.removesuffix("\\\n"))
-            line_continuation_count += 1
+            line_cont_count += 1
+
+        elif line_cont_count:
+            # Splice together consecutive lines that originally ended with line continuations.
+            fixed_lines[-line_cont_count:] = ["".join((*fixed_lines[-line_cont_count:], line))]
+
+            # Pad with newlines to match the number of line continuations so far.
+            fixed_lines.extend("\n" * line_cont_count)
+            line_cont_count = 0
 
         else:
             fixed_lines.append(line)
 
-            if line_continuation_count:
-                # Pad with newlines to match the number of line continuations so far.
-                fixed_lines.append("\n" * line_continuation_count)
-                line_continuation_count = 0
+    if line_cont_count:
+        fixed_lines.extend("\n" * line_cont_count)
+        line_cont_count = 0
 
     return "".join(fixed_lines)
 
 
-class Lexer:
-    """A lexer for the C language. The main entrypoint is the lex() method.
+class Tokenizer:
+    """A tokenizer for the C language based on the C11 standard.
 
     Parameters
     ----------
     source: str
-        The string to lex.
-    filename: str
+        The string to tokenize.
+    filename: str, default="<unknown>"
         The name of the file the string came from.
 
     Attributes
     ----------
     source: str
-        The string being lexed.
+        The string being tokenized, after newline canonicalization and line continuation splicing.
     filename: str
         The name of the file the string came from.
     previous: int
@@ -92,13 +99,21 @@ class Lexer:
     current: int
         The index of the current character in the given source.
     end: int
-        The length of the entire source.
+        The length of the entire source (after modification).
     lineno: int
         The line number currently being parsed of the source. Starts at 1.
-    at_bol: bool
-        Whether the token being processed is at the beginning of a line.
-    has_space: bool
-        Whether the token being processed has whitespace preceding it.
+
+    Notes
+    -----
+    The goal is for a run of this tokenizer to be fully roundtrip-able, i.e. the result of combining the values of the
+    tokens should match the original source code exactly. That means understanding the following without source
+    modification:
+
+        - Digraphs and trigraphs.
+        - All valid newlines.
+        - Line continuations.
+
+    Unfortunately, these are currently either a) unhandled, or b) taken care of via source modification.
     """
 
     source: str
@@ -107,117 +122,104 @@ class Lexer:
     current: int
     end: int
     lineno: int
-    at_bol: bool
-    has_space: bool
 
-    def __init__(self, source: str, filename: str):
-        self.source = _replace_line_continuations(_canonicalize_newlines(source))
+    def __init__(self, source: str, filename: str = "<unknown>"):
+        self.source = _canonicalize_newlines(_replace_line_continuations(source))
         self.filename = filename
         self.previous = 0
         self.current = 0
         self.end = len(self.source)
         self.lineno = 1
-        self.at_bol = True
-        self.has_space = False
-
-    # region ---- Lexing helpers ----
 
     @property
     def curr_char(self) -> str:
-        """The character at the current index in the text."""
+        """str: The character at the current index in the text."""
 
         return self.source[self.current]
 
-    def peek(self, *, predicate: Optional[Callable[[str], bool]] = None) -> bool:
+    def __iter__(self) -> Self:
+        return self
+
+    def __next__(self) -> Token:
+        # We're done if we reach the end of the given source code.
+        if self.current >= self.end:
+            raise StopIteration
+
+        curr_char = self.curr_char
+
+        if self.source.startswith("//", self.current):
+            self.lex_line_comment()
+            kind = TokenKind.COMMENT
+
+        elif self.source.startswith("/*", self.current):
+            self.lex_block_comment()
+            kind = TokenKind.COMMENT
+
+        elif curr_char == "\n":
+            self.lex_newline()
+            kind = TokenKind.NEWLINE
+
+        elif curr_char.isspace():
+            self.lex_whitespace()
+            kind = TokenKind.WS
+
+        elif curr_char.isdecimal() or (curr_char == "." and self._peek(predicate=str.isdecimal)):
+            self.lex_numeric_literal()
+            kind = TokenKind.PP_NUM
+
+        elif self.source.startswith(('"', 'u8"', 'u"', 'L"', 'W"'), self.current):
+            self.lex_string_literal()
+            kind = TokenKind.STRING_LITERAL
+
+        elif self.source.startswith(("'", "u'", "L'", "U'"), self.current):
+            self.lex_char_const()
+            kind = TokenKind.CHAR_CONST
+
+        elif CharSets.can_start_identifier(curr_char):
+            self.lex_identifier()
+            kind = TokenKind.ID
+
+        elif curr_char in CharSets.punctuation1:
+            # Some punctuators overlap with different lengths. Verify the exact one.
+            self.lex_punctuation()
+            kind = PUNCTUATION_TOKEN_MAP[self.source[self.previous : self.current]]
+
+        else:
+            msg = "Invalid token."
+            raise CSyntaxError(msg, self._get_current_location())
+
+        return self._emit(kind)
+
+    def _peek(self, *, predicate: Optional[Callable[[str], bool]] = None) -> bool:
         """Check if the next character in the source exists and optionally meets some condition."""
 
         return (self.current + 1) < self.end and ((predicate is None) or predicate(self.source[self.current + 1]))
 
-    def reset(self) -> None:
-        """Discard the current potential token span."""
-
-        self.previous = self.current
-
-    def emit(self, tok_kind: TokenKind, /) -> Token:
+    def _emit(self, tok_kind: TokenKind, /) -> Token:
         """Emit the current token."""
 
-        _last_cr = max(self.source.rfind("\n", 0, self.previous), 0)
-        col_offset = self.previous - _last_cr - 1
+        tok_value = self.source[self.previous : self.current]
 
-        tok = Token(
-            tok_kind,
-            self.source[self.previous : self.current],
-            self.lineno,
-            col_offset,
-            self.filename,
-            self.at_bol,
-            self.has_space,
-        )
-        self.reset()
-        self.has_space = self.at_bol = False
+        # FIXME: This has to find the closest *unescaped* newline.
+        _last_lf = max(self.source.rfind("\n", 0, self.previous), 0)
+        col_offset = self.previous - _last_lf - 1
+        end_col_offset = col_offset + (self.current - self.previous)
+
+        tok = Token(tok_kind, tok_value, self.lineno, col_offset, end_col_offset, self.filename)
+        self.previous = self.current
         return tok
 
-    def get_current_location(self) -> tuple[str, str, int, int, int]:
+    def _get_current_location(self) -> tuple[str, str, int, int, int]:
         """Give location information about the current potential token."""
 
         line_text = self.source.splitlines()[self.lineno - 1]
-        return (self.filename, line_text, self.lineno, self.previous, self.current)
 
-    # endregion
+        # FIXME: This has to find the closest *unescaped* newline.
+        _last_lf = max(self.source.rfind("\n", 0, self.previous), 0)
+        col_offset = self.previous - _last_lf - 1
+        end_col_offset = col_offset + (self.current - self.previous)
 
-    # region ---- Lexing loop and rules ----
-
-    def lex(self) -> Generator[Token]:
-        while self.current < self.end:
-            curr_char = self.curr_char
-
-            # Discard line comments.
-            if self.source.startswith("//", self.current):
-                self.lex_line_comment()
-
-            # Discard block comments.
-            elif self.source.startswith("/*"):
-                self.lex_block_comment()
-
-            # Discard newlines.
-            elif curr_char == "\n":
-                self.lex_newline()
-
-            # Discard whitespace.
-            elif curr_char.isspace():
-                self.lex_whitespace()
-
-            # Capture numeric literals.
-            elif curr_char.isdecimal() or (curr_char == "." and self.peek(predicate=str.isdecimal)):
-                self.lex_numeric_literal()
-                yield self.emit(TokenKind.PP_NUM)
-
-            # Capture string literals.
-            elif self.source.startswith(('"', 'u8"', 'u"', 'L"', 'W"'), self.current):
-                self.lex_string_literal()
-                yield self.emit(TokenKind.STRING_LITERAL)
-
-            # Capture character constants.
-            elif self.source.startswith(("'", "u'", "L'", "U'"), self.current):
-                self.lex_char_const()
-                yield self.emit(TokenKind.CHAR_CONST)
-
-            # Capture identifiers.
-            elif CharSets.can_start_identifier(curr_char):
-                # This is technically a valid identifier already. Try to see if it's longer.
-                self.lex_identifier()
-                yield self.emit(TokenKind.ID)
-
-            # Capture punctuators.
-            elif curr_char in CharSets.punctuation1:
-                # Some punctuators overlap with different lengths, so verify the exact one.
-                self.lex_punctuation()
-                yield self.emit(PUNCTUATION_TOKEN_MAP[self.source[self.previous : self.current]])
-
-            # Panic for unknowns.
-            else:
-                msg = "Invalid token."
-                raise CSyntaxError(msg, self.get_current_location())
+        return (self.filename, line_text, self.lineno, col_offset, end_col_offset)
 
     def lex_line_comment(self) -> None:
         """Lex a line comment, which starts with "//"."""
@@ -229,9 +231,6 @@ class Lexer:
         except ValueError:
             self.current = self.end
 
-        self.reset()
-        self.has_space = True
-
     def lex_block_comment(self) -> None:
         """Lex a block comment, which starts with "/*", ends with "*/", and can span multiple lines."""
 
@@ -241,28 +240,21 @@ class Lexer:
             comment_end = self.source.index("*/", self.current)
         except ValueError as exc:
             msg = "Unclosed block comment."
-            raise CSyntaxError(msg, self.get_current_location()) from exc
+            raise CSyntaxError(msg, self._get_current_location()) from exc
         else:
             self.current = comment_end + 2
-
-        self.reset()
-        self.has_space = True
 
     def lex_newline(self) -> None:
         """Lex a newline."""
 
         self.current += 1
-        self.reset()
         self.lineno += 1
-        self.at_bol = True
-        self.has_space = False
 
     def lex_whitespace(self) -> None:
         """Lex unimportant whitespace."""
 
         self.current += 1
-        self.reset()
-        self.has_space = True
+        self.current = next((i for i in range(self.current, self.end) if not self.source[i].isspace()), self.current)
 
     def lex_numeric_literal(self) -> None:
         """Lex a somewhat relaxed numeric literal. These will be replaced during preprocessing."""
@@ -270,12 +262,15 @@ class Lexer:
         self.current += 1
 
         while self.current < self.end:
-            if self.curr_char in "eEpP" and self.peek(predicate="+-".__contains__):
+            if self.curr_char in "eEpP" and self._peek(predicate="+-".__contains__):
                 self.current += 2
             elif self.curr_char in CharSets.alphanumeric or self.curr_char == ".":
                 self.current += 1
             else:
                 break
+        else:
+            # TODO: Raise an error about an incomplete numeric literal?
+            pass
 
     def lex_identifier(self) -> None:
         """Lex an identifier/keyword."""
@@ -299,7 +294,7 @@ class Lexer:
 
         if self.source[self.previous : self.current] not in PUNCTUATION_TOKEN_MAP:
             msg = "Invalid punctuation."
-            raise CSyntaxError(msg, self.get_current_location())
+            raise CSyntaxError(msg, self._get_current_location())
 
     def lex_string_literal(self) -> None:
         """Lex a string literal, which can be utf-8, utf-16, wide, or utf-32."""
@@ -325,21 +320,19 @@ class Lexer:
         """Find the end of a quote-bounded section and set the index to it."""
 
         # Precondition: The index points to the starting quote character.
-        quote_char = self.curr_char
         quote_start = self.current
+        quote_char = self.curr_char
         quote_type = "char const" if (quote_char == "'") else "string literal"
 
         # Find the end of the quote. Escaped quote characters are ignored.
-        quote_indices = _seq_indices(self.source, quote_char, self.current, self.end)
+        quote_indices = _seq_indices(self.source, quote_char, self.current + 1, self.end)
         try:
             self.current = next(i for i in quote_indices if self.source[i - 1] != "\\") + 1
         except StopIteration:
             msg = f"Unclosed {quote_type}."
-            raise CSyntaxError(msg, self.get_current_location()) from None
+            raise CSyntaxError(msg, self._get_current_location()) from None
 
-        # The quote must be entirely on one logical line. Unescaped newlines break it.
+        # The quote must be entirely on one logical line. Ensure it doesn't contain any unescaped newlines.
         if any((self.source[i - 1] != "\\") for i in _seq_indices(self.source, "\n", quote_start, self.current)):
             msg = f"Unclosed {quote_type}."
-            raise CSyntaxError(msg, self.get_current_location())
-
-    # endregion
+            raise CSyntaxError(msg, self._get_current_location())

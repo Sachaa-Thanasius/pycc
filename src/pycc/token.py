@@ -19,6 +19,11 @@ class TokenKind(Enum):
 
     # fmt: off
 
+    # Meta
+    NEWLINE             = auto()
+    COMMENT             = auto()
+    WS                  = auto()
+
     # Keywords (see KEYWORD_TOKEN_MAP)
     AUTO                = auto()
     BREAK               = auto()
@@ -301,7 +306,7 @@ class Token:
         String value, as taken from the input.
     """
 
-    __slots__ = ("kind", "value", "lineno", "col_offset", "filename", "at_bol", "has_space")
+    __slots__ = ("kind", "value", "lineno", "col_offset", "end_col_offset", "filename")
 
     def __init__(  # noqa: PLR0913
         self,
@@ -309,28 +314,22 @@ class Token:
         value: str,
         lineno: int,
         col_offset: int,
+        end_col_offset: int,
         filename: str,
-        at_bol: bool,
-        has_space: bool,
     ) -> None:
         self.kind = kind
         self.value = value
         self.lineno = lineno
         self.col_offset = col_offset
+        self.end_col_offset = end_col_offset
         self.filename = filename
-        self.at_bol = at_bol
-        self.has_space = has_space
 
     @property
     def end_lineno(self) -> int:
         return self.lineno + self.value.count("\n")
 
-    @property
-    def end_col_offset(self) -> int:
-        return self.col_offset + len(self.value)
-
     def __repr__(self) -> str:
-        attrs = ("kind", "value", "lineno", "col_offset", "end_lineno", "end_col_offset")
+        attrs = ("kind", "value", "lineno", "col_offset", "end_col_offset")
         return f'{type(self).__name__}({", ".join(f"{attr}={getattr(self, attr)!r}" for attr in attrs)})'
 
 
@@ -348,7 +347,6 @@ class CharSets:
 
     alphanumeric = ascii_letters + digits
 
-    # TODO: Do we need all of these single ones?
     punctuation1 = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"""
     punctuation2 = tuple(chars for chars in PUNCTUATION_TOKEN_MAP if len(chars) == 2)
     punctuation3 = tuple(chars for chars in PUNCTUATION_TOKEN_MAP if len(chars) == 3)

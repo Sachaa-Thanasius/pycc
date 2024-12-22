@@ -1,15 +1,23 @@
 """Custom exceptions and warnings related to the parser."""
 
-import warnings
-
 from ._compat import Self
 from .token import Token
 
 
-__all__ = ("CSyntaxError", "CSyntaxWarning")
+__all__ = (
+    "PyCCError",
+    "CSyntaxError",
+    "PyCCWarning",
+    "CSyntaxWarning",
+    "CPreprocessorWarning",
+)
 
 
-class CSyntaxError(Exception):
+class PyCCError(Exception):
+    """Base exception class for pycc."""
+
+
+class CSyntaxError(PyCCError):
     """Exception raised when a fatal issue is encountered while parsing C.
 
     Parameters
@@ -67,9 +75,13 @@ class CSyntaxError(Exception):
         return cls(msg, (token.filename, line_text, token.lineno, token.col_offset, token.end_col_offset))
 
 
-class CSyntaxWarning(Warning):
-    """Category for warnings related to issues encountered while parsing C."""
+class PyCCWarning(Warning):
+    """Base warning class for pycc."""
 
 
-def warn_from_token(token: Token) -> None:
-    warnings.warn_explicit("Extra tokens.", CSyntaxWarning, token.filename, token.lineno)
+class CSyntaxWarning(PyCCWarning):
+    """Warnings related to issues encountered while parsing C."""
+
+
+class CPreprocessorWarning(PyCCWarning):
+    """Warnings raised during preprocessing by the #warning directive."""
