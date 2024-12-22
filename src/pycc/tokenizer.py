@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Generator, Sequence
+from collections.abc import Callable, Generator
 
 from ._compat import Optional, Self
 from .errors import CSyntaxError
@@ -12,13 +12,8 @@ from .token import PUNCTUATION_TOKEN_MAP, CharSets, Token, TokenKind
 __all__ = ("Tokenizer",)
 
 
-def _seq_indices(
-    sequence: Sequence[object],
-    value: object,
-    start: int = 0,
-    stop: Optional[int] = None,
-) -> Generator[int]:
-    """Return indices where a value occurs in a sequence.
+def _str_indices(text: str, value: str, start: int = 0, stop: Optional[int] = None) -> Generator[int]:
+    """Yield indices where a value occurs in a string, from left to right.
 
     Notes
     -----
@@ -26,30 +21,58 @@ def _seq_indices(
 
     Examples
     -------
-    >>> list(_seq_indices('AABCADEAF', 'A'))
+    >>> list(_str_indices('AABCADEAF', 'A'))
     [0, 1, 4, 7]
     """
 
-    indexer = sequence.index
+    indexer = text.index
     if stop is None:
-        stop = len(sequence)
-    i = start
+        stop = len(text)
+    idx = start
     try:
         while True:
-            yield (i := indexer(value, i, stop))
-            i += 1
+            yield (idx := indexer(value, idx, stop))
+            idx += 1
+    except ValueError:
+        pass
+
+
+def _str_rindices(text: str, value: str, start: int = 0, stop: Optional[int] = None) -> Generator[int]:
+    """Yield indices where a value occurs in a string, from right to left.
+
+    Notes
+    -----
+    This is based on the iter_index itertools recipe.
+
+    Examples
+    -------
+    >>> list(_str_rindices('AABCADEAF', 'A'))
+    [7, 4, 1, 0]
+    """
+
+    rindexer = text.rindex
+    if stop is None:
+        stop = len(text)
+    idx = stop
+    try:
+        while True:
+            yield (idx := rindexer(value, start, idx))
+            idx -= 1
     except ValueError:
         pass
 
 
 def _canonicalize_newlines(source: str, /) -> str:
-    """Canonicalize newlines to "\\n" in the given text. Newlines include "\\r" and "\\r\\n"."""
+    """Canonicalize newlines to linefeed ("\\n") in the given source. Newlines include "\\r" and "\\r\\n"."""
 
     return source.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _replace_line_continuations(source: str, /) -> str:
-    """Remove line continuations while keeping logical and physical line numbers synced via extra newlines."""
+    """Remove line continuations while keeping logical and physical line numbers synced via extra newlines.
+
+    This assumes newlines in the given source have already been canonicalized to linefeed ("\\n").
+    """
 
     line_cont_count = 0
     fixed_lines: list[str] = []
@@ -105,12 +128,12 @@ class Tokenizer:
 
     Notes
     -----
-    The goal is for a run of this tokenizer to be fully roundtrip-able, i.e. the result of combining the values of the
-    tokens should match the original source code exactly. That means understanding the following without source
-    modification:
+    The long-term goal is for a run of this tokenizer to be fully roundtrip-able, i.e. the result of combining the
+    values of the tokens should match the original source code exactly. That means understanding the following without
+    source modification:
 
         - Digraphs and trigraphs.
-        - All valid newlines.
+        - All valid newlines, e.g. "\\n", "\\r\\n", "\\r".
         - Line continuations.
 
     Unfortunately, these are currently either a) unhandled, or b) taken care of via source modification.
@@ -141,10 +164,11 @@ class Tokenizer:
         return self
 
     def __next__(self) -> Token:
-        # We're done if we reach the end of the given source code.
+        # -- Broadcast that the tokenizer is done past the end of the given source code.
         if self.current >= self.end:
             raise StopIteration
 
+        # -- Get the kind and set the start and end positions of the next token.
         curr_char = self.curr_char
 
         if self.source.startswith("//", self.current):
@@ -188,38 +212,66 @@ class Tokenizer:
             msg = "Invalid token."
             raise CSyntaxError(msg, self._get_current_location())
 
-        return self._emit(kind)
+        # -- Construct the token.
+        tok_value = self.source[self.previous : self.current]
+        col_offset, end_col_offset = self._get_col_offsets()
+        tok = Token(kind, tok_value, self.lineno, col_offset, end_col_offset, self.filename)
+
+        # -- Reset the token position tracking.
+        self.previous = self.current
+
+        if kind is TokenKind.NEWLINE:
+            self.lineno += 1
+
+        # -- Return the token.
+        return tok
 
     def _peek(self, *, predicate: Optional[Callable[[str], bool]] = None) -> bool:
         """Check if the next character in the source exists and optionally meets some condition."""
 
         return (self.current + 1) < self.end and ((predicate is None) or predicate(self.source[self.current + 1]))
 
-    def _emit(self, tok_kind: TokenKind, /) -> Token:
-        """Emit the current token."""
+    def _get_col_offsets(self) -> tuple[int, int]:
+        """Get the column offsets for the start and end of the current potential token.
 
-        tok_value = self.source[self.previous : self.current]
+        These are relative to the nearest preceding unescaped newline.
+        """
 
-        # FIXME: This has to find the closest *unescaped* newline.
-        _last_lf = max(self.source.rfind("\n", 0, self.previous), 0)
-        col_offset = self.previous - _last_lf - 1
+        _previous_newlines = _str_rindices(self.source, "\n", 0, self.previous)
+        _last_unescaped_nl = next((i for i in _previous_newlines if self.source[i - 1] != "\\"), 0)
+
+        col_offset = self.previous - _last_unescaped_nl - 1
         end_col_offset = col_offset + (self.current - self.previous)
 
-        tok = Token(tok_kind, tok_value, self.lineno, col_offset, end_col_offset, self.filename)
-        self.previous = self.current
-        return tok
+        return (col_offset, end_col_offset)
 
     def _get_current_location(self) -> tuple[str, str, int, int, int]:
         """Give location information about the current potential token."""
 
         line_text = self.source.splitlines()[self.lineno - 1]
-
-        # FIXME: This has to find the closest *unescaped* newline.
-        _last_lf = max(self.source.rfind("\n", 0, self.previous), 0)
-        col_offset = self.previous - _last_lf - 1
-        end_col_offset = col_offset + (self.current - self.previous)
-
+        col_offset, end_col_offset = self._get_col_offsets()
         return (self.filename, line_text, self.lineno, col_offset, end_col_offset)
+
+    def _find_quote_end(self) -> None:
+        """Find the end of a quote-bounded section and set the index to it."""
+
+        # Precondition: The index points to the starting quote character.
+        quote_start = self.current
+        quote_char = self.curr_char
+        quote_type = "char const" if (quote_char == "'") else "string literal"
+
+        # Find the end of the quote. Escaped quote characters are ignored.
+        quote_indices = _str_indices(self.source, quote_char, self.current + 1, self.end)
+        try:
+            self.current = next(i for i in quote_indices if self.source[i - 1] != "\\") + 1
+        except StopIteration:
+            msg = f"Unclosed {quote_type}."
+            raise CSyntaxError(msg, self._get_current_location()) from None
+
+        # The quote must be entirely on one logical line. Ensure it doesn't contain any unescaped newlines.
+        if any((self.source[i - 1] != "\\") for i in _str_indices(self.source, "\n", quote_start, self.current)):
+            msg = f"Unclosed {quote_type}."
+            raise CSyntaxError(msg, self._get_current_location())
 
     def lex_line_comment(self) -> None:
         """Lex a line comment, which starts with "//"."""
@@ -247,13 +299,16 @@ class Tokenizer:
     def lex_newline(self) -> None:
         """Lex a newline."""
 
+        # NOTE: This is currently sparse, but that'll change if we handle all newlines without canonicalization.
+
         self.current += 1
-        self.lineno += 1
 
     def lex_whitespace(self) -> None:
         """Lex unimportant whitespace."""
 
         self.current += 1
+
+        # Get the index of the next non-whitespace character.
         self.current = next((i for i in range(self.current, self.end) if not self.source[i].isspace()), self.current)
 
     def lex_numeric_literal(self) -> None:
@@ -268,14 +323,13 @@ class Tokenizer:
                 self.current += 1
             else:
                 break
-        else:
-            # TODO: Raise an error about an incomplete numeric literal?
-            pass
 
     def lex_identifier(self) -> None:
         """Lex an identifier/keyword."""
 
         self.current += 1
+
+        # Get the index of the next character that isn't valid as part of an identifier.
         self.current = next(
             (i for i in range(self.current, self.end) if not CharSets.can_end_identifier(self.source[i])),
             self.current,
@@ -305,7 +359,7 @@ class Tokenizer:
         elif self.curr_char in "uLW":
             self.current += 1
 
-        self.find_quote_end()
+        self._find_quote_end()
 
     def lex_char_const(self) -> None:
         """Lex a character constant, which can be utf-8, utf-16, wide, or utf-32."""
@@ -314,25 +368,4 @@ class Tokenizer:
         if self.curr_char in "uLU":
             self.current += 1
 
-        self.find_quote_end()
-
-    def find_quote_end(self) -> None:
-        """Find the end of a quote-bounded section and set the index to it."""
-
-        # Precondition: The index points to the starting quote character.
-        quote_start = self.current
-        quote_char = self.curr_char
-        quote_type = "char const" if (quote_char == "'") else "string literal"
-
-        # Find the end of the quote. Escaped quote characters are ignored.
-        quote_indices = _seq_indices(self.source, quote_char, self.current + 1, self.end)
-        try:
-            self.current = next(i for i in quote_indices if self.source[i - 1] != "\\") + 1
-        except StopIteration:
-            msg = f"Unclosed {quote_type}."
-            raise CSyntaxError(msg, self._get_current_location()) from None
-
-        # The quote must be entirely on one logical line. Ensure it doesn't contain any unescaped newlines.
-        if any((self.source[i - 1] != "\\") for i in _seq_indices(self.source, "\n", quote_start, self.current)):
-            msg = f"Unclosed {quote_type}."
-            raise CSyntaxError(msg, self._get_current_location())
+        self._find_quote_end()
