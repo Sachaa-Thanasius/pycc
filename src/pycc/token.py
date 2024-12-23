@@ -304,6 +304,11 @@ class Token:
         The kind of the token.
     value: str
         String value, as taken from the input.
+    lineno: int
+        The line number of the file that the token is on. 1-indexed.
+    col_offset: int
+    end_col_offset: int
+    filename: str
     """
 
     __slots__ = ("kind", "value", "lineno", "col_offset", "end_col_offset", "filename")

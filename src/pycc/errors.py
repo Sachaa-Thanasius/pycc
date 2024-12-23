@@ -26,7 +26,7 @@ class CSyntaxError(PyCCError):
         The exception message.
     location: tuple[str, str, int, int, int]
         Details about the text for which the error occured, including the filename, line text, line number, column
-        offset, and column ending.
+        offset, and column ending offset.
 
     Attributes
     ----------
@@ -40,6 +40,8 @@ class CSyntaxError(PyCCError):
         The line number in the file that the error occurred at. This is 1-indexed.
     offset: int
         The column in the line where the error occurred.
+    end_offset: int
+        The relevant end column in the line of the error.
 
     Notes
     -----

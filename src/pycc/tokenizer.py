@@ -1,5 +1,3 @@
-"""The lexing logic for transforming a source written in C into a stream of tokens."""
-
 from __future__ import annotations
 
 from collections.abc import Callable, Generator
@@ -17,7 +15,7 @@ def _str_indices(text: str, value: str, start: int = 0, stop: Optional[int] = No
 
     Notes
     -----
-    This is based on the iter_index itertools recipe.
+    This is based on the iter_index() itertools recipe.
 
     Examples
     -------
@@ -42,7 +40,7 @@ def _str_rindices(text: str, value: str, start: int = 0, stop: Optional[int] = N
 
     Notes
     -----
-    This is based on the iter_index itertools recipe.
+    This is based on the iter_index() itertools recipe.
 
     Examples
     -------
@@ -60,12 +58,6 @@ def _str_rindices(text: str, value: str, start: int = 0, stop: Optional[int] = N
             idx -= 1
     except ValueError:
         pass
-
-
-def _canonicalize_newlines(source: str, /) -> str:
-    """Canonicalize newlines to linefeed ("\\n") in the given source. Newlines include "\\r" and "\\r\\n"."""
-
-    return source.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _replace_line_continuations(source: str, /) -> str:
@@ -104,6 +96,8 @@ def _replace_line_continuations(source: str, /) -> str:
 class Tokenizer:
     """A tokenizer for the C language based on the C11 standard.
 
+    Iterate over an instance to get a stream of tokens.
+
     Parameters
     ----------
     source: str
@@ -128,15 +122,15 @@ class Tokenizer:
 
     Notes
     -----
-    The long-term goal is for a run of this tokenizer to be fully roundtrip-able, i.e. the result of combining the
-    values of the tokens should match the original source code exactly. That means understanding the following without
-    source modification:
+    The long-term goal is for a run of this tokenizer to be fully roundtrip-able. i.e.::
 
-        - Digraphs and trigraphs.
-        - All valid newlines, e.g. "\\n", "\\r\\n", "\\r".
-        - Line continuations.
+        "".join(tok.value for tok in Tokenizer(source)) == source
 
-    Unfortunately, these are currently either a) unhandled, or b) taken care of via source modification.
+    That means the tokenizer has to understand the following without source modification:
+
+        - [] Digraphs and trigraphs.
+        - [x] All valid newlines, e.g. "\\n", "\\r\\n", "\\r".
+        - [] Line continuations.
     """
 
     source: str
@@ -147,7 +141,7 @@ class Tokenizer:
     lineno: int
 
     def __init__(self, source: str, filename: str = "<unknown>"):
-        self.source = _canonicalize_newlines(_replace_line_continuations(source))
+        self.source = _replace_line_continuations(source)
         self.filename = filename
         self.previous = 0
         self.current = 0
@@ -164,49 +158,49 @@ class Tokenizer:
         return self
 
     def __next__(self) -> Token:
-        # -- Broadcast that the tokenizer is done past the end of the given source code.
+        # -- Broadcast that the tokenizer is done after the end of the source code.
         if self.current >= self.end:
             raise StopIteration
 
-        # -- Get the kind and set the start and end positions of the next token.
+        # -- Get the token kind and set the start and end positions of the next token.
         curr_char = self.curr_char
 
         if self.source.startswith("//", self.current):
             self.lex_line_comment()
-            kind = TokenKind.COMMENT
+            tok_kind = TokenKind.COMMENT
 
         elif self.source.startswith("/*", self.current):
             self.lex_block_comment()
-            kind = TokenKind.COMMENT
+            tok_kind = TokenKind.COMMENT
 
-        elif curr_char == "\n":
+        elif curr_char in "\r\n":
             self.lex_newline()
-            kind = TokenKind.NEWLINE
+            tok_kind = TokenKind.NEWLINE
 
         elif curr_char.isspace():
             self.lex_whitespace()
-            kind = TokenKind.WS
+            tok_kind = TokenKind.WS
 
         elif curr_char.isdecimal() or (curr_char == "." and self._peek(predicate=str.isdecimal)):
             self.lex_numeric_literal()
-            kind = TokenKind.PP_NUM
+            tok_kind = TokenKind.PP_NUM
 
         elif self.source.startswith(('"', 'u8"', 'u"', 'L"', 'W"'), self.current):
             self.lex_string_literal()
-            kind = TokenKind.STRING_LITERAL
+            tok_kind = TokenKind.STRING_LITERAL
 
         elif self.source.startswith(("'", "u'", "L'", "U'"), self.current):
             self.lex_char_const()
-            kind = TokenKind.CHAR_CONST
+            tok_kind = TokenKind.CHAR_CONST
 
         elif CharSets.can_start_identifier(curr_char):
             self.lex_identifier()
-            kind = TokenKind.ID
+            tok_kind = TokenKind.ID
 
         elif curr_char in CharSets.punctuation1:
             # Some punctuators overlap with different lengths. Verify the exact one.
             self.lex_punctuation()
-            kind = PUNCTUATION_TOKEN_MAP[self.source[self.previous : self.current]]
+            tok_kind = PUNCTUATION_TOKEN_MAP[self.source[self.previous : self.current]]
 
         else:
             msg = "Invalid token."
@@ -215,12 +209,12 @@ class Tokenizer:
         # -- Construct the token.
         tok_value = self.source[self.previous : self.current]
         col_offset, end_col_offset = self._get_col_offsets()
-        tok = Token(kind, tok_value, self.lineno, col_offset, end_col_offset, self.filename)
+        tok = Token(tok_kind, tok_value, self.lineno, col_offset, end_col_offset, self.filename)
 
         # -- Reset the token position tracking.
         self.previous = self.current
 
-        if kind is TokenKind.NEWLINE:
+        if tok_kind is TokenKind.NEWLINE:
             self.lineno += 1
 
         # -- Return the token.
@@ -237,8 +231,15 @@ class Tokenizer:
         These are relative to the nearest preceding unescaped newline.
         """
 
-        _previous_newlines = _str_rindices(self.source, "\n", 0, self.previous)
-        _last_unescaped_nl = next((i for i in _previous_newlines if self.source[i - 1] != "\\"), 0)
+        # NOTE: This is expensive. Can it be made lazy somehow, e.g. a cached property on the token instance that isn't
+        # run if not requested?
+
+        _lf_indices = _str_rindices(self.source, "\n", 0, self.previous)
+        _cr_indices = _str_rindices(self.source, "\r", 0, self.previous)
+        _unescaped_lfs = (i for i in _lf_indices if i == 0 or self.source[i - 1] not in "\\\r")
+        _unescaped_crs = (i for i in _cr_indices if i == 0 or self.source[i - 1] != "\\")
+
+        _last_unescaped_nl = max(next(_unescaped_crs, -1), next(_unescaped_lfs, -1), -1)
 
         col_offset = self.previous - _last_unescaped_nl - 1
         end_col_offset = col_offset + (self.current - self.previous)
@@ -246,9 +247,17 @@ class Tokenizer:
         return (col_offset, end_col_offset)
 
     def _get_current_location(self) -> tuple[str, str, int, int, int]:
-        """Give location information about the current potential token."""
+        """Give location information about the current potential token.
 
+        Returns
+        -------
+        tuple[str, str, int, int, int]
+            A tuple with the filename, line text, line number, column offset, and end column offset.
+        """
+
+        # FIXME: This might be wrong? It doesn't find the relevant *unescaped* newline.
         line_text = self.source.splitlines()[self.lineno - 1]
+
         col_offset, end_col_offset = self._get_col_offsets()
         return (self.filename, line_text, self.lineno, col_offset, end_col_offset)
 
@@ -269,22 +278,24 @@ class Tokenizer:
             raise CSyntaxError(msg, self._get_current_location()) from None
 
         # The quote must be entirely on one logical line. Ensure it doesn't contain any unescaped newlines.
-        if any((self.source[i - 1] != "\\") for i in _str_indices(self.source, "\n", quote_start, self.current)):
+        _lf_indices = _str_indices(self.source, "\n", quote_start, self.current)
+        _cr_indices = _str_indices(self.source, "\r", quote_start, self.current)
+        if (
+            any((self.source[i - 1] not in "\\\r") for i in _lf_indices)
+            or any((self.source[i - 1] != "\\") for i in _cr_indices)
+        ):  # fmt: skip
             msg = f"Unclosed {quote_type}."
             raise CSyntaxError(msg, self._get_current_location())
 
     def lex_line_comment(self) -> None:
-        """Lex a line comment, which starts with "//"."""
+        """Handle a line comment, which starts with "//"."""
 
         self.current += 2
-
-        try:
-            self.current = self.source.index("\n", self.current)
-        except ValueError:
-            self.current = self.end
+        potential_ends = (self.source.find("\r", self.current), self.source.find("\n", self.current), self.end)
+        self.current = min(i for i in potential_ends if i != -1)
 
     def lex_block_comment(self) -> None:
-        """Lex a block comment, which starts with "/*", ends with "*/", and can span multiple lines."""
+        """Handle a block comment, which starts with "/*", ends with "*/", and can span multiple lines."""
 
         self.current += 2
 
@@ -297,14 +308,17 @@ class Tokenizer:
             self.current = comment_end + 2
 
     def lex_newline(self) -> None:
-        """Lex a newline."""
+        """Handle a newline."""
 
-        # NOTE: This is currently sparse, but that'll change if we handle all newlines without canonicalization.
+        # Account for DOS-style line endings.
+        if self.curr_char == "\r":
+            self.current += 1
 
-        self.current += 1
+        if self.curr_char == "\n":
+            self.current += 1
 
     def lex_whitespace(self) -> None:
-        """Lex unimportant whitespace."""
+        """Handle unimportant whitespace."""
 
         self.current += 1
 
@@ -312,7 +326,7 @@ class Tokenizer:
         self.current = next((i for i in range(self.current, self.end) if not self.source[i].isspace()), self.current)
 
     def lex_numeric_literal(self) -> None:
-        """Lex a somewhat relaxed numeric literal. These will be replaced during preprocessing."""
+        """Handle a somewhat relaxed numeric literal. These will be replaced during preprocessing."""
 
         self.current += 1
 
@@ -325,7 +339,7 @@ class Tokenizer:
                 break
 
     def lex_identifier(self) -> None:
-        """Lex an identifier/keyword."""
+        """Handle an identifier/keyword."""
 
         self.current += 1
 
@@ -336,7 +350,7 @@ class Tokenizer:
         )
 
     def lex_punctuation(self) -> None:
-        """Lex a punctuator."""
+        """Handle a punctuator."""
 
         # We have to increment by the exact length of the identifier, so we check the longest ones first.
         if self.source.startswith(CharSets.punctuation3, self.current):
@@ -351,7 +365,7 @@ class Tokenizer:
             raise CSyntaxError(msg, self._get_current_location())
 
     def lex_string_literal(self) -> None:
-        """Lex a string literal, which can be utf-8, utf-16, wide, or utf-32."""
+        """Handle a string literal, which can be utf-8, utf-16, wide, or utf-32."""
 
         # Move past the prefix so that the quote starter is the current character.
         if self.source.startswith("u8", self.current):
@@ -362,7 +376,7 @@ class Tokenizer:
         self._find_quote_end()
 
     def lex_char_const(self) -> None:
-        """Lex a character constant, which can be utf-8, utf-16, wide, or utf-32."""
+        """Handle a character constant, which can be utf-8, utf-16, wide, or utf-32."""
 
         # Move past the prefix so that the quote starter is the current character.
         if self.curr_char in "uLU":
