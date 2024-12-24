@@ -1,3 +1,5 @@
+"""Compatibility shim for typing- and annotation-related symbols, to avoid ever importing typing."""
+
 from __future__ import annotations
 
 

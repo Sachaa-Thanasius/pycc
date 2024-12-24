@@ -61,18 +61,15 @@ def _str_rindices(text: str, value: str, start: int = 0, stop: Optional[int] = N
 
 
 def _replace_line_continuations(source: str, /) -> str:
-    """Remove line continuations while keeping logical and physical line numbers synced via extra newlines.
-
-    This assumes newlines in the given source have already been canonicalized to linefeed ("\\n").
-    """
+    """Remove line continuations while keeping logical and physical line numbers synced via extra newlines."""
 
     line_cont_count = 0
     fixed_lines: list[str] = []
 
     for line in source.splitlines(keepends=True):
-        if line.endswith("\\\n"):
+        if line.endswith(("\\\n", "\\\r\n", "\\\r")):
             # Discard the line continuation characters.
-            fixed_lines.append(line.removesuffix("\\\n"))
+            fixed_lines.append(line.rstrip("\r\n").removesuffix("\\"))
             line_cont_count += 1
 
         elif line_cont_count:
@@ -80,21 +77,21 @@ def _replace_line_continuations(source: str, /) -> str:
             fixed_lines[-line_cont_count:] = ["".join((*fixed_lines[-line_cont_count:], line))]
 
             # Pad with newlines to match the number of line continuations so far.
-            fixed_lines.extend("\n" * line_cont_count)
+            fixed_lines.append("\n" * line_cont_count)
             line_cont_count = 0
 
         else:
             fixed_lines.append(line)
 
     if line_cont_count:
-        fixed_lines.extend("\n" * line_cont_count)
+        fixed_lines.append("\n" * line_cont_count)
         line_cont_count = 0
 
     return "".join(fixed_lines)
 
 
 class Tokenizer:
-    """A tokenizer for the C language based on the C11 standard.
+    """A tokenizer for the C language, based loosely on the C11 standard.
 
     Iterate over an instance to get a stream of tokens.
 
@@ -108,7 +105,7 @@ class Tokenizer:
     Attributes
     ----------
     source: str
-        The string being tokenized, after newline canonicalization and line continuation splicing.
+        The string being tokenized, after line continuation splicing.
     filename: str
         The name of the file the string came from.
     previous: int
@@ -128,7 +125,7 @@ class Tokenizer:
 
     That means the tokenizer has to understand the following without source modification:
 
-        - [] Digraphs and trigraphs.
+        - [] Digraphs and trigraphs (optional).
         - [x] All valid newlines, e.g. "\\n", "\\r\\n", "\\r".
         - [] Line continuations.
     """
@@ -154,6 +151,9 @@ class Tokenizer:
 
         return self.source[self.current]
 
+    def __repr__(self):
+        return f"{self.__class__.__name__}(filename={self.filename!r}, current={self.current!r})"
+
     def __iter__(self) -> Self:
         return self
 
@@ -166,40 +166,41 @@ class Tokenizer:
         curr_char = self.curr_char
 
         if self.source.startswith("//", self.current):
-            self.lex_line_comment()
+            self.tk_line_comment()
             tok_kind = TokenKind.COMMENT
 
         elif self.source.startswith("/*", self.current):
-            self.lex_block_comment()
+            self.tk_block_comment()
             tok_kind = TokenKind.COMMENT
 
         elif curr_char in "\r\n":
-            self.lex_newline()
+            self.tk_newline()
             tok_kind = TokenKind.NEWLINE
 
+        # TODO: str.isspace() covers too much. Narrow down the exact characters that count as whitespace.
         elif curr_char.isspace():
-            self.lex_whitespace()
+            self.tk_whitespace()
             tok_kind = TokenKind.WS
 
         elif curr_char.isdecimal() or (curr_char == "." and self._peek(predicate=str.isdecimal)):
-            self.lex_numeric_literal()
+            self.tk_numeric_literal()
             tok_kind = TokenKind.PP_NUM
 
         elif self.source.startswith(('"', 'u8"', 'u"', 'L"', 'W"'), self.current):
-            self.lex_string_literal()
+            self.tk_string_literal()
             tok_kind = TokenKind.STRING_LITERAL
 
         elif self.source.startswith(("'", "u'", "L'", "U'"), self.current):
-            self.lex_char_const()
+            self.tk_char_const()
             tok_kind = TokenKind.CHAR_CONST
 
         elif CharSets.can_start_identifier(curr_char):
-            self.lex_identifier()
+            self.tk_identifier()
             tok_kind = TokenKind.ID
 
         elif curr_char in CharSets.punctuation1:
             # Some punctuators overlap with different lengths. Verify the exact one.
-            self.lex_punctuation()
+            self.tk_punctuation()
             tok_kind = PUNCTUATION_TOKEN_MAP[self.source[self.previous : self.current]]
 
         else:
@@ -219,6 +220,8 @@ class Tokenizer:
 
         # -- Return the token.
         return tok
+
+    # region ---- Helpers ----
 
     def _peek(self, *, predicate: Optional[Callable[[str], bool]] = None) -> bool:
         """Check if the next character in the source exists and optionally meets some condition."""
@@ -287,14 +290,18 @@ class Tokenizer:
             msg = f"Unclosed {quote_type}."
             raise CSyntaxError(msg, self._get_current_location())
 
-    def lex_line_comment(self) -> None:
+    # endregion ----
+
+    # region ---- Token position handlers ----
+
+    def tk_line_comment(self) -> None:
         """Handle a line comment, which starts with "//"."""
 
         self.current += 2
         potential_ends = (self.source.find("\r", self.current), self.source.find("\n", self.current), self.end)
         self.current = min(i for i in potential_ends if i != -1)
 
-    def lex_block_comment(self) -> None:
+    def tk_block_comment(self) -> None:
         """Handle a block comment, which starts with "/*", ends with "*/", and can span multiple lines."""
 
         self.current += 2
@@ -307,7 +314,7 @@ class Tokenizer:
         else:
             self.current = comment_end + 2
 
-    def lex_newline(self) -> None:
+    def tk_newline(self) -> None:
         """Handle a newline."""
 
         # Account for DOS-style line endings.
@@ -317,7 +324,7 @@ class Tokenizer:
         if self.curr_char == "\n":
             self.current += 1
 
-    def lex_whitespace(self) -> None:
+    def tk_whitespace(self) -> None:
         """Handle unimportant whitespace."""
 
         self.current += 1
@@ -325,7 +332,7 @@ class Tokenizer:
         # Get the index of the next non-whitespace character.
         self.current = next((i for i in range(self.current, self.end) if not self.source[i].isspace()), self.current)
 
-    def lex_numeric_literal(self) -> None:
+    def tk_numeric_literal(self) -> None:
         """Handle a somewhat relaxed numeric literal. These will be replaced during preprocessing."""
 
         self.current += 1
@@ -338,7 +345,7 @@ class Tokenizer:
             else:
                 break
 
-    def lex_identifier(self) -> None:
+    def tk_identifier(self) -> None:
         """Handle an identifier/keyword."""
 
         self.current += 1
@@ -349,7 +356,7 @@ class Tokenizer:
             self.current,
         )
 
-    def lex_punctuation(self) -> None:
+    def tk_punctuation(self) -> None:
         """Handle a punctuator."""
 
         # We have to increment by the exact length of the identifier, so we check the longest ones first.
@@ -364,7 +371,7 @@ class Tokenizer:
             msg = "Invalid punctuation."
             raise CSyntaxError(msg, self._get_current_location())
 
-    def lex_string_literal(self) -> None:
+    def tk_string_literal(self) -> None:
         """Handle a string literal, which can be utf-8, utf-16, wide, or utf-32."""
 
         # Move past the prefix so that the quote starter is the current character.
@@ -375,7 +382,7 @@ class Tokenizer:
 
         self._find_quote_end()
 
-    def lex_char_const(self) -> None:
+    def tk_char_const(self) -> None:
         """Handle a character constant, which can be utf-8, utf-16, wide, or utf-32."""
 
         # Move past the prefix so that the quote starter is the current character.
@@ -383,3 +390,5 @@ class Tokenizer:
             self.current += 1
 
         self._find_quote_end()
+
+    # endregion ----

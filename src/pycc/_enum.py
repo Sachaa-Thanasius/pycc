@@ -29,7 +29,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 #
-# endregion
+# endregion --------
 
 """A modified version of Brett Cannon's basicenum library, which is an API-compatible re-implementation of ``enum.Enum`
 and related code.
@@ -223,6 +223,7 @@ class EnumMeta(type):
 
     def __iter__(self):
         """Iterate through the members."""
+
         return iter(self._member_map_[name] for name in self._member_names_)
 
     def __reversed__(self):
@@ -250,7 +251,7 @@ class EnumMeta(type):
 
         return getattr(instance, "_cls", None) is self
 
-    def _create_(  # noqa: ANN202, PLR0913
+    def _create_(  # noqa: ANN202, PLR0913 # pyright doesn't allow Self in metaclasses.
         self,
         enum_name: str,
         member_names: EnumNames,
