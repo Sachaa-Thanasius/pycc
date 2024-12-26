@@ -73,7 +73,7 @@ class Preprocessor:
                 directive_name_tok = next(filter(_is_not_ws, self.tokens), None)
 
                 if directive_name_tok is None:
-                    msg = "Invalid preprocessor directive."
+                    msg = "Missing preprocessor directive."
                     raise CSyntaxError.from_token(msg, curr_tok)
 
                 if directive_name_tok.kind is TokenKind.NEWLINE:
@@ -145,12 +145,12 @@ class Preprocessor:
 
         path_start_tok = next(filter(_is_not_ws, self.tokens))
 
-        # Pattern 1: #include "foo.h"
+        # Case 1: #include "foo.h"
         if path_start_tok.kind is TokenKind.STRING_LITERAL:
             parsed_include_path = path_start_tok.value[1:-1]
             self._skip_line()
 
-        # Pattern 2: #include <foo.h>
+        # Case 2: #include <foo.h>
         elif path_start_tok.kind is TokenKind.LE:
             # Find the closing ">" before a newline.
             _include_path_toks = list(takewhile(_is_not_newline, self.tokens))
@@ -164,7 +164,7 @@ class Preprocessor:
 
             parsed_include_path = "".join(t.value for t in _include_path_toks)
 
-        # Pattern 3: #include FOO
+        # Case 3: #include FOO
         else:
             # TODO: Perform macro expansion, i.e. run through preprocessor and prepend to self.tokens.
             raise NotImplementedError

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Generator
+from itertools import islice
 
 from ._compat import Optional, Self
 from .errors import CSyntaxError
@@ -8,56 +8,6 @@ from .token import PUNCTUATION_TOKEN_MAP, CharSets, Token, TokenKind
 
 
 __all__ = ("Tokenizer",)
-
-
-def _str_indices(text: str, value: str, start: int = 0, stop: Optional[int] = None) -> Generator[int]:
-    """Yield indices where a value occurs in a string, from left to right.
-
-    Notes
-    -----
-    This is based on the iter_index() itertools recipe.
-
-    Examples
-    -------
-    >>> list(_str_indices('AABCADEAF', 'A'))
-    [0, 1, 4, 7]
-    """
-
-    indexer = text.index
-    if stop is None:
-        stop = len(text)
-    idx = start
-    try:
-        while True:
-            yield (idx := indexer(value, idx, stop))
-            idx += 1
-    except ValueError:
-        pass
-
-
-def _str_rindices(text: str, value: str, start: int = 0, stop: Optional[int] = None) -> Generator[int]:
-    """Yield indices where a value occurs in a string, from right to left.
-
-    Notes
-    -----
-    This is based on the iter_index() itertools recipe.
-
-    Examples
-    -------
-    >>> list(_str_rindices('AABCADEAF', 'A'))
-    [7, 4, 1, 0]
-    """
-
-    rindexer = text.rindex
-    if stop is None:
-        stop = len(text)
-    idx = stop
-    try:
-        while True:
-            yield (idx := rindexer(value, start, idx))
-            idx -= 1
-    except ValueError:
-        pass
 
 
 def _replace_line_continuations(source: str, /) -> str:
@@ -145,6 +95,9 @@ class Tokenizer:
         self.end = len(self.source)
         self.lineno = 1
 
+        #: The index of the start of the current line.
+        self._current_line_start: int = 0
+
     @property
     def curr_char(self) -> str:
         """str: The character at the current index in the text."""
@@ -182,7 +135,7 @@ class Tokenizer:
             self.tk_whitespace()
             tok_kind = TokenKind.WS
 
-        elif curr_char.isdecimal() or (curr_char == "." and self._peek(predicate=str.isdecimal)):
+        elif curr_char.isdecimal() or (curr_char == "." and ((peek := self._peek()) is not None) and peek.isdecimal()):
             self.tk_numeric_literal()
             tok_kind = TokenKind.PP_NUM
 
@@ -209,7 +162,9 @@ class Tokenizer:
 
         # -- Construct the token.
         tok_value = self.source[self.previous : self.current]
-        col_offset, end_col_offset = self._get_col_offsets()
+        col_offset = self.previous - self._current_line_start
+        end_col_offset = col_offset + (self.current - self.previous)
+
         tok = Token(tok_kind, tok_value, self.lineno, col_offset, end_col_offset, self.filename)
 
         # -- Reset the token position tracking.
@@ -217,40 +172,25 @@ class Tokenizer:
 
         if tok_kind is TokenKind.NEWLINE:
             self.lineno += 1
+            self._current_line_start = self.current
 
         # -- Return the token.
         return tok
 
     # region ---- Helpers ----
 
-    def _peek(self, *, predicate: Optional[Callable[[str], bool]] = None) -> bool:
-        """Check if the next character in the source exists and optionally meets some condition."""
+    def _peek(self) -> Optional[str]:
+        """Return the next character in the source if it exists. Otherwise, return None."""
 
-        return (self.current + 1) < self.end and ((predicate is None) or predicate(self.source[self.current + 1]))
-
-    def _get_col_offsets(self) -> tuple[int, int]:
-        """Get the column offsets for the start and end of the current potential token.
-
-        These are relative to the nearest preceding unescaped newline.
-        """
-
-        # NOTE: This is expensive. Can it be made lazy somehow, e.g. a cached property on the token instance that isn't
-        # run if not requested?
-
-        _lf_indices = _str_rindices(self.source, "\n", 0, self.previous)
-        _cr_indices = _str_rindices(self.source, "\r", 0, self.previous)
-        _unescaped_lfs = (i for i in _lf_indices if i == 0 or self.source[i - 1] not in "\\\r")
-        _unescaped_crs = (i for i in _cr_indices if i == 0 or self.source[i - 1] != "\\")
-
-        _last_unescaped_nl = max(next(_unescaped_crs, -1), next(_unescaped_lfs, -1), -1)
-
-        col_offset = self.previous - _last_unescaped_nl - 1
-        end_col_offset = col_offset + (self.current - self.previous)
-
-        return (col_offset, end_col_offset)
+        if (self.current + 1) < self.end:
+            return self.source[self.current + 1]
+        else:
+            return None
 
     def _get_current_location(self) -> tuple[str, str, int, int, int]:
         """Give location information about the current potential token.
+
+        This is usually used to augment displayed syntax error information.
 
         Returns
         -------
@@ -258,10 +198,11 @@ class Tokenizer:
             A tuple with the filename, line text, line number, column offset, and end column offset.
         """
 
-        # FIXME: This might be wrong? It doesn't find the relevant *unescaped* newline.
+        # TODO: This might be wrong? It doesn't find the relevant *unescaped* newline.
         line_text = self.source.splitlines()[self.lineno - 1]
 
-        col_offset, end_col_offset = self._get_col_offsets()
+        col_offset = self.previous - self._current_line_start
+        end_col_offset = col_offset + (self.current - self.previous)
         return (self.filename, line_text, self.lineno, col_offset, end_col_offset)
 
     def _find_quote_end(self) -> None:
@@ -273,20 +214,25 @@ class Tokenizer:
         quote_type = "char const" if (quote_char == "'") else "string literal"
 
         # Find the end of the quote. Escaped quote characters are ignored.
-        quote_indices = _str_indices(self.source, quote_char, self.current + 1, self.end)
-        try:
-            self.current = next(i for i in quote_indices if self.source[i - 1] != "\\") + 1
-        except StopIteration:
-            msg = f"Unclosed {quote_type}."
-            raise CSyntaxError(msg, self._get_current_location()) from None
+        quote_end = self.current + 1
+        while True:
+            quote_end = self.source.find(quote_char, quote_end, self.end)
+
+            if quote_end == -1:
+                msg = f"Unclosed {quote_type}."
+                raise CSyntaxError(msg, self._get_current_location()) from None
+
+            elif self.source[quote_end - 1] != "\\":
+                self.current = quote_end + 1
+                break
+
+            quote_end += 1
 
         # The quote must be entirely on one logical line. Ensure it doesn't contain any unescaped newlines.
-        _lf_indices = _str_indices(self.source, "\n", quote_start, self.current)
-        _cr_indices = _str_indices(self.source, "\r", quote_start, self.current)
-        if (
-            any((self.source[i - 1] not in "\\\r") for i in _lf_indices)
-            or any((self.source[i - 1] != "\\") for i in _cr_indices)
-        ):  # fmt: skip
+        if any(
+            (char == "\r" and self.source[i - 1] != "\\") or (char == "\n" and self.source[i - 1] not in "\\\r")
+            for i, char in enumerate(islice(self.source, quote_start, self.current), start=quote_start)
+        ):
             msg = f"Unclosed {quote_type}."
             raise CSyntaxError(msg, self._get_current_location())
 
@@ -315,7 +261,7 @@ class Tokenizer:
             self.current = comment_end + 2
 
     def tk_newline(self) -> None:
-        """Handle a newline."""
+        """Handle a newline, whether it is "\\n", "\\r\\n", or "\\r"."""
 
         # Account for DOS-style line endings.
         if self.curr_char == "\r":
@@ -338,7 +284,7 @@ class Tokenizer:
         self.current += 1
 
         while self.current < self.end:
-            if self.curr_char in "eEpP" and self._peek(predicate="+-".__contains__):
+            if self.curr_char in "eEpP" and ((peek := self._peek()) is not None) and peek in "+-":
                 self.current += 2
             elif self.curr_char in CharSets.alphanumeric or self.curr_char == ".":
                 self.current += 1
