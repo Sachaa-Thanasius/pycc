@@ -33,6 +33,14 @@
 
 """A modified version of Brett Cannon's basicenum library, which is an API-compatible re-implementation of ``enum.Enum`
 and related code.
+
+For compatibility with type checkers that special-case the stdlib enum module, use a construct like the following::
+
+    if TYPE_CHECKING:
+        from enum import Enum, auto
+    else:
+        from ._enum import Enum, auto
+
 """
 
 from __future__ import annotations

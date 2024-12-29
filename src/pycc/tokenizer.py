@@ -1,3 +1,6 @@
+# TODO: Switch to operating on bytes. That could be faster because of the following:
+#   - Tokens could avoid the overhead of string slicing by receiving memoryview instead.
+
 from __future__ import annotations
 
 from itertools import islice
@@ -69,15 +72,19 @@ class Tokenizer:
 
     Notes
     -----
-    The long-term goal is for a run of this tokenizer to be fully roundtrip-able. i.e.::
+    The long-term goal is for a run of this tokenizer to be fully roundtrip-able, i.e.::
 
         "".join(tok.value for tok in Tokenizer(source)) == source
 
     That means the tokenizer has to understand the following without source modification:
-
-        - [] Digraphs and trigraphs (optional).
-        - [x] All valid newlines, e.g. "\\n", "\\r\\n", "\\r".
+        - [x] All valid newlines.
+            - [x] "\\n" (Unix)
+            - [x] "\\r\\n" (Windows)
+            - [x] "\\r" (older MacOS?)
         - [] Line continuations.
+        - [] Universal escape sequences (starting with \\u or \\U) in identifiers, char constants, and string literals.
+        - [] Other escape sequences in char constants and string literals.
+        - [] Digraphs and trigraphs (optional).
     """
 
     source: str
@@ -95,12 +102,12 @@ class Tokenizer:
         self.end = len(self.source)
         self.lineno = 1
 
-        #: The index of the start of the current line.
+        #: The index for the start of the current line.
         self._current_line_start: int = 0
 
     @property
     def curr_char(self) -> str:
-        """str: The character at the current index in the text."""
+        """`str`: The character at the current index in the text."""
 
         return self.source[self.current]
 
@@ -128,7 +135,7 @@ class Tokenizer:
 
         elif curr_char in "\r\n":
             self.tk_newline()
-            tok_kind = TokenKind.NEWLINE
+            tok_kind = TokenKind.NL
 
         # TODO: str.isspace() covers too much. Narrow down the exact characters that count as whitespace.
         elif curr_char.isspace():
@@ -163,14 +170,14 @@ class Tokenizer:
         # -- Construct the token.
         tok_value = self.source[self.previous : self.current]
         col_offset = self.previous - self._current_line_start
-        end_col_offset = col_offset + (self.current - self.previous)
+        end_col_offset = self.current - self._current_line_start
 
         tok = Token(tok_kind, tok_value, self.lineno, col_offset, end_col_offset, self.filename)
 
-        # -- Reset the token position tracking.
+        # -- Update position trackers.
         self.previous = self.current
 
-        if tok_kind is TokenKind.NEWLINE:
+        if tok_kind is TokenKind.NL:
             self.lineno += 1
             self._current_line_start = self.current
 
@@ -198,11 +205,11 @@ class Tokenizer:
             A tuple with the filename, line text, line number, column offset, and end column offset.
         """
 
-        # TODO: This might be wrong? It doesn't find the relevant *unescaped* newline.
+        # TODO: Check if this is wrong; I don't think it finds the relevant *unescaped* newline.
         line_text = self.source.splitlines()[self.lineno - 1]
 
         col_offset = self.previous - self._current_line_start
-        end_col_offset = col_offset + (self.current - self.previous)
+        end_col_offset = self.current - self._current_line_start
         return (self.filename, line_text, self.lineno, col_offset, end_col_offset)
 
     def _find_quote_end(self) -> None:
@@ -213,20 +220,18 @@ class Tokenizer:
         quote_char = self.curr_char
         quote_type = "char const" if (quote_char == "'") else "string literal"
 
-        # Find the end of the quote. Escaped quote characters are ignored.
+        # Find the end of the quote. Ignore escaped quote characters.
         quote_end = self.current + 1
-        while True:
-            quote_end = self.source.find(quote_char, quote_end, self.end)
-
-            if quote_end == -1:
-                msg = f"Unclosed {quote_type}."
-                raise CSyntaxError(msg, self._get_current_location()) from None
-
-            elif self.source[quote_end - 1] != "\\":
-                self.current = quote_end + 1
-                break
-
-            quote_end += 1
+        try:
+            while True:
+                quote_end = self.source.index(quote_char, quote_end, self.end)
+                if self.source[quote_end - 1] != "\\":
+                    self.current = quote_end + 1
+                    break
+                quote_end += 1
+        except ValueError:  # Raised by index when not found.
+            msg = f"Unclosed {quote_type}."
+            raise CSyntaxError(msg, self._get_current_location()) from None
 
         # The quote must be entirely on one logical line. Ensure it doesn't contain any unescaped newlines.
         if any(
@@ -261,7 +266,7 @@ class Tokenizer:
             self.current = comment_end + 2
 
     def tk_newline(self) -> None:
-        """Handle a newline, whether it is "\\n", "\\r\\n", or "\\r"."""
+        """Handle a newline. A newline can be "\\n", "\\r\\n", or "\\r"."""
 
         # Account for DOS-style line endings.
         if self.curr_char == "\r":

@@ -34,7 +34,6 @@ exclude_lines = ["^\\s*(?:el)?if TYPE_CHECKING:$"]
 
 [tool.ruff]
 line-length = 120
-target-version = "py39"
 
 [tool.ruff.lint]
 select = [
@@ -102,9 +101,9 @@ extend-ignore = [
 
     # ---- Project-specific rules
     # Readability
-    "RET505", # Returns in both parts of if-else.
-    "RET506", # Raise within an if-else.
-    "RET508", # elif after break.
+    "RET505", # el(se|if) after return.
+    "RET506", # el(se|if) after raise.
+    "RET508", # el(se|if) after break.
     "SIM108", # if-else instead of a ternary.
 ]
 unfixable = [

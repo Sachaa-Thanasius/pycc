@@ -20,12 +20,14 @@ class _PlaceholderGenericAlias(GenericAlias):
 
 
 class _PlaceholderMeta(type):
+    _source_module: str
+
     def __init__(self, *args: object, **kwargs: object):
         super().__init__(*args, **kwargs)
-        self.__doc__ = f"Placeholder for {self.__module__}.{self.__name__}."
+        self.__doc__ = f"Placeholder for {self._source_module}.{self.__name__}."
 
     def __repr__(self):
-        return f"<import placeholder for {super().__repr__()}>"
+        return f"<import placeholder for {self._source_module}.{self.__name__}>"
 
 
 class _PlaceholderGenericMeta(_PlaceholderMeta):
@@ -43,16 +45,16 @@ else:
         return val
 
     class Any(metaclass=_PlaceholderMeta):
-        __module__ = "typing"
+        _source_module = "typing"
 
     class Optional(metaclass=_PlaceholderGenericMeta):
-        __module__ = "typing"
+        _source_module = "typing"
 
     class Union(metaclass=_PlaceholderGenericMeta):
-        __module__ = "typing"
+        _source_module = "typing"
 
     class Self(metaclass=_PlaceholderMeta):
-        __module__ = "typing"
+        _source_module = "typing"
 
     class TypeAlias(metaclass=_PlaceholderMeta):
-        __module__ = "typing"
+        _source_module = "typing"

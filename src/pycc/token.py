@@ -20,7 +20,7 @@ class TokenKind(Enum):
     # fmt: off
 
     # Meta
-    NEWLINE             = auto()
+    NL                  = auto()
     COMMENT             = auto()
     WS                  = auto()
 
