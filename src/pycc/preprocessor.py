@@ -1,4 +1,4 @@
-# TODO: Switch to using a logger for warnings; that might be more configurable.
+# TODO: Make the warnings more ergonomic to use and receieve. For the latter, maybe have them be opt-in?
 
 from __future__ import annotations
 
@@ -16,6 +16,10 @@ from .tokenizer import Tokenizer
 __all__ = ("Preprocessor",)
 
 
+class Macro:
+    pass
+
+
 def _is_not_ws(tok: Token, /) -> bool:
     """Determine if the given token is non-newline whitespace."""
 
@@ -23,7 +27,7 @@ def _is_not_ws(tok: Token, /) -> bool:
 
 
 def _is_pp_directive_hash(curr_tok: Token, prev_tok: Optional[Token], /) -> bool:
-    return curr_tok.kind is TokenKind.PP_OCTO and (prev_tok is None or prev_tok.kind is TokenKind.NL)
+    return (curr_tok.kind is TokenKind.PP_OCTO) and (prev_tok is None or prev_tok.kind is TokenKind.NL)
 
 
 class Preprocessor:
@@ -49,38 +53,42 @@ class Preprocessor:
         A list of directories to search for include paths.
     ignore_missing_includes: bool
         Whether to ignore includes directives that point at files that cannot be found by the preprocessor.
-    curr_tok: Token
-        The token currently being preprocessed. Does not exist until iteration begins.
+    macros: dict[str, Macro]
+        The macros defined during preprocessing.
     """
 
     raw_tokens: Iterator[Token]
     local_dir: str
     include_search_dirs: list[str]
     ignore_missing_includes: bool
-    curr_tok: Token
+    macros: dict[str, Macro]
 
     def __init__(self, tokens: Iterable[Token], local_dir: str = ""):
         self.raw_tokens = iter(tokens)
         self.local_dir = local_dir
         self.include_search_dirs = []
         self.ignore_missing_includes = False
+        self.macros = {}
 
         #: The last seen token before the current one.
         self._prev_tok: Optional[Token] = None
-
-        #: A set of files that use "#pragma once" and thus should only be included once, i.e. only be preprocessed once.
+        #: A set of files that guard inclusion via "#pragma once".
         self._pragma_once_paths: set[str] = set()
+        #: A set of files that guard inclusion via "#ifndef".
+        self._include_guarded_paths: set[str] = set()
+        #: The index within include_search_dirs that the "#include_next" directive will start searching from.
+        self._include_next_index: int = 0
 
     def __iter__(self) -> Self:
         return self
 
-    def __next__(self) -> Token:
-        for self.curr_tok in self.raw_tokens:  # noqa: B020
-            # -- Expand macros.
-            if (self.curr_tok.kind is TokenKind.ID) and self._is_macro(self.curr_tok):
+    def __next__(self) -> Token:  # noqa: PLR0912
+        for self.curr_tok in self.raw_tokens:  # noqa: B020 # False positive.
+            # Case 1: Expand a macro.
+            if self._is_macro(self.curr_tok):
                 self._expand_macro()
 
-            # -- Process preprocessor directives.
+            # Case 2: Process a preprocessor directive.
             elif _is_pp_directive_hash(self.curr_tok, self._prev_tok):
                 directive_name_tok = next(filter(_is_not_ws, self.raw_tokens), None)
 
@@ -89,19 +97,18 @@ class Preprocessor:
                     raise CSyntaxError.from_token(msg, self.curr_tok)
 
                 if directive_name_tok.kind is TokenKind.NL:
-                    # Null directive.
+                    # Allow null directives.
                     pass
 
                 elif directive_name_tok.value == "include":
                     self.pp_include()
 
-                # NOTE: "#pragma once" is a common but non-standard alternative to "#include" guards.
                 elif (
                     directive_name_tok.value == "pragma"
                     and (peek := self._peek(skip_ws=True)) is not None
                     and peek.value == "once"
                 ):
-                    # Land on the "once" since its presence is confirmed.
+                    # Forward to "once" since its presence is confirmed.
                     self.curr_tok = next(filter(_is_not_ws, self.raw_tokens))  # noqa: PLW2901
                     self.pp_pragma_once()
 
@@ -120,17 +127,17 @@ class Preprocessor:
 
                 self._prev_tok = self.curr_tok
 
-            # -- No more preprocessing needed for the current token. Exit the loop and return that token.
+            # Case 3: Ignore whitespace.
+            elif self.curr_tok.kind in {TokenKind.NL, TokenKind.WS, TokenKind.COMMENT}:
+                self._prev_tok = self.curr_tok
+
+            # Default: Return the current token.
             else:
-                break
+                self._prev_tok = self.curr_tok
+                return self.curr_tok
 
-        else:
-            # -- Broadcast that the preprocessor is done after the end of the token stream.
-            raise StopIteration
-
-        self._prev_tok = self.curr_tok
-
-        return self.curr_tok
+        # Signal that the preprocessor is done after the end of the token stream.
+        raise StopIteration
 
     # region ---- Helpers ----
 
@@ -160,25 +167,94 @@ class Preprocessor:
         if next_line_start is not None:
             self._prepend([next_line_start])
 
-    def _find_include_path(self, potential_path: str, *, is_quoted: bool = False) -> str:
+    def _is_macro(self, tok: Token, /) -> bool:
+        """Determine if a token corresponds to a defined macro."""
+
+        return (tok.kind is TokenKind.ID) and (tok.value in self.macros)
+
+    def _expand_macro(self) -> None:
+        raise NotImplementedError
+
+    def _read_include_name(self, name_start_tok: Token, /) -> tuple[str, bool]:
+        # Case 1: #include "foo.h"
+        if name_start_tok.kind is TokenKind.STRING_LITERAL:
+            parsed_include_name = name_start_tok.value[1:-1]
+            is_quoted = True
+
+            self._skip_line()
+
+        # Case 2: #include <foo.h>
+        elif name_start_tok.kind is TokenKind.LE:
+            # Find the closing ">" before a newline.
+            _include_path_toks = list(takewhile(lambda t: t.kind is not TokenKind.NL, self.raw_tokens))
+
+            # We could consume all the remaining tokens without finding ">", possibly without even hitting a newline.
+            if not _include_path_toks or (_include_path_toks[-1].kind is not TokenKind.GE):
+                msg = "Expected closing '>' for #include."
+                raise CSyntaxError.from_token(msg, name_start_tok)
+
+            # Remove the ">".
+            del _include_path_toks[-1]
+
+            parsed_include_name = "".join(t.value for t in _include_path_toks)
+            is_quoted = False
+
+        # Case 3: #include FOO
+        elif self._is_macro(name_start_tok):
+            # TODO: Perform macro expansion, i.e. run through preprocessor and prepend to self.tokens. Then recurse?
+            self._expand_macro()
+            raise NotImplementedError
+
+        else:
+            msg = "Expected filename after #include."
+            raise CSyntaxError.from_token(msg, name_start_tok)
+
+        return parsed_include_name, is_quoted
+
+    def _find_include_path(self, include_name: str, /, *, is_quoted: bool = False) -> str:
+        """Find an include path based on its name within the known include directories.
+
+        Parameters
+        ----------
+        include_name: str
+            The name or local path of the file to be included.
+        is_quoted: bool, default=False
+            Whether the include name is quoted. If True, the local directory is searched first. Defaults to False.
+
+        Returns
+        -------
+        str
+            If found, the resolved include path. If not found, the original name.
+        """
+
         if is_quoted:
             search_dirs = (self.local_dir, *self.include_search_dirs)
         else:
             search_dirs = self.include_search_dirs
 
-        for include_dir in search_dirs:
-            candidate = os.path.normpath(os.path.join(include_dir, potential_path))
+        for i, include_dir in enumerate(search_dirs):
+            candidate = os.path.normpath(os.path.join(include_dir, include_name))
+            if os.path.exists(candidate):
+                self._include_next_index = i + 1
+                return candidate
+
+        return include_name
+
+    def _find_include_next_path(self, include_name: str, /) -> str:
+        for include_dir in self.include_search_dirs[self._include_next_index :]:
+            candidate = os.path.normpath(os.path.join(include_dir, include_name))
             if os.path.exists(candidate):
                 return candidate
 
-        # Use the original path as a last resort.
-        return potential_path
+        return include_name
 
-    def _is_macro(self, tok: Token, /) -> bool:
-        raise NotImplementedError
-
-    def _expand_macro(self) -> None:
-        raise NotImplementedError
+    def _tokens_with_temp_local_dir(self, include_path: str, include_source: str, /) -> Generator[Token]:
+        _orig_local_dir = self.local_dir
+        self.local_dir = os.path.dirname(include_path)
+        try:
+            yield from Tokenizer(include_source, include_path)
+        finally:
+            self.local_dir = _orig_local_dir
 
     # endregion ----
 
@@ -187,61 +263,43 @@ class Preprocessor:
     def pp_include(self) -> None:
         """#include directive: Find the included file and prepend its preprocessed tokens to our tokens."""
 
-        path_start_tok = next(filter(_is_not_ws, self.raw_tokens))
+        include_name_start_tok = next(filter(_is_not_ws, self.raw_tokens))
+        include_name, is_quoted = self._read_include_name(include_name_start_tok)
+        include_path = self._find_include_path(include_name, is_quoted=is_quoted)
 
-        # Case 1: #include "foo.h"
-        if path_start_tok.kind is TokenKind.STRING_LITERAL:
-            parsed_include_path = path_start_tok.value[1:-1]
-            self._skip_line()
-            is_quoted = True
-
-        # Case 2: #include <foo.h>
-        elif path_start_tok.kind is TokenKind.LE:
-            # Find the closing ">" before a newline.
-            _include_path_toks = list(takewhile(lambda t: t.kind is not TokenKind.NL, self.raw_tokens))
-
-            # We could consume all the remaining tokens without finding ">", possibly without even hitting a newline.
-            if not _include_path_toks or (_include_path_toks[-1].kind is not TokenKind.GE):
-                msg = "Expected closing '>' for #include."
-                raise CSyntaxError.from_token(msg, path_start_tok)
-
-            # Remove the ">".
-            del _include_path_toks[-1]
-
-            parsed_include_path = "".join(t.value for t in _include_path_toks)
-            is_quoted = False
-
-        # Case 3: #include FOO
-        else:
-            # TODO: Perform macro expansion, i.e. run through preprocessor and prepend to self.tokens.
-            raise NotImplementedError
-
-        include_path = self._find_include_path(parsed_include_path, is_quoted=is_quoted)
-
-        if include_path not in self._pragma_once_paths:
-            try:
+        try:
+            if (include_path not in self._pragma_once_paths) and (include_path not in self._include_guarded_paths):
                 with open(include_path) as fp:
                     include_source = fp.read()
-            except OSError as exc:
-                if not self.ignore_missing_includes:
-                    msg = f"Cannot open included file: {include_path!r}"
-                    raise CSyntaxError.from_token(msg, path_start_tok) from exc
-            else:
-                tokenizer = Tokenizer(include_source, include_path)
 
-                def _pp_with_new_local_dir() -> Generator[Token]:
-                    _orig_local_dir = self.local_dir
-                    self.local_dir = os.path.dirname(include_path)
-
-                    try:
-                        yield from tokenizer
-                    finally:
-                        self.local_dir = _orig_local_dir
-
-                self._prepend(_pp_with_new_local_dir())
+                self._prepend(self._tokens_with_temp_local_dir(include_source, include_path))
+        except OSError as exc:
+            if not self.ignore_missing_includes:
+                msg = f"Cannot open included file: {include_path!r}"
+                raise CSyntaxError.from_token(msg, include_name_start_tok) from exc
 
     def pp_include_next(self) -> None:
-        raise NotImplementedError
+        """#include_next directive: Find the included file and prepend its preprocessed tokens to our tokens.
+
+        Notes
+        -----
+        This is a common but *non-standard* directive.
+        """
+
+        include_name_start_tok = next(filter(_is_not_ws, self.raw_tokens))
+        include_name, _ = self._read_include_name(include_name_start_tok)
+        include_path = self._find_include_next_path(include_name)
+
+        try:
+            if (include_path not in self._pragma_once_paths) and (include_path not in self._include_guarded_paths):
+                with open(include_path) as fp:
+                    include_source = fp.read()
+
+                self._prepend(self._tokens_with_temp_local_dir(include_source, include_path))
+        except OSError as exc:
+            if not self.ignore_missing_includes:
+                msg = f"Cannot open included file: {include_path!r}"
+                raise CSyntaxError.from_token(msg, include_name_start_tok) from exc
 
     def pp_define(self) -> None:
         raise NotImplementedError
@@ -271,7 +329,13 @@ class Preprocessor:
         raise NotImplementedError
 
     def pp_pragma_once(self) -> None:
-        """#pragma once directive: Skip to the next line, but count the current file as having been preprocessed already."""
+        """#pragma once directive: Skip to the next line, but remember the current file as having been preprocessed
+        already.
+
+        Notes
+        -----
+        This is a common but *non-standard* directive that is used as an alternative to standard #ifndef include guards.
+        """
 
         self._pragma_once_paths.add(self.curr_tok.filename)
         self._skip_line()
@@ -279,7 +343,7 @@ class Preprocessor:
     def pp_pragma(self) -> None:
         """#pragma directive: Ignore and skip to the next line."""
 
-        # NOTE: Capturing pragmas might be useful for certain kinds of analysis? Something to consider.
+        # NOTE: Capturing pragmas might be useful for static analysis. Something to consider.
 
         self.curr_tok = next(t for t in self.raw_tokens if t.kind is TokenKind.NL)
 

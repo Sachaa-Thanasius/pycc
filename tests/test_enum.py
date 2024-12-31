@@ -31,7 +31,9 @@
 #
 # endregion --------
 
-"""Tests for the internal enum implementation."""
+# pyright: basic
+
+"""Tests for the internal enum implementation. Mostly copied from Brett Cannon's basicenum library."""
 
 import enum
 import pickle
@@ -109,7 +111,7 @@ class TestClass:
             v2 = module.auto()
             v3 = module.auto()
 
-        for attr in {"v1", "v2", "v3"}:
+        for attr in ("v1", "v2", "v3"):
             member = getattr(Enum, attr)
             assert member.name == attr
             assert member.value == int(attr[-1])
@@ -151,7 +153,7 @@ class TestClass:
             GREEN = "GREEN"
             BLUE = "BLUE"
 
-        for attr in {"RED", "GREEN", "BLUE"}:
+        for attr in ("RED", "GREEN", "BLUE"):
             member = getattr(Enum, attr)
             assert member.name == attr
             assert member.value == attr
@@ -287,7 +289,7 @@ class TestMember:
         assert hash(enum_.v1) == hash(enum_.v1)
 
     def test_pickle(self, enum_):
-        roundtrip = pickle.loads(pickle.dumps(enum_.v1))
+        roundtrip = pickle.loads(pickle.dumps(enum_.v1))  # noqa: S301
         assert roundtrip is enum_.v1
 
 

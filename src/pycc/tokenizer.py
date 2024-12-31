@@ -118,11 +118,11 @@ class Tokenizer:
         return self
 
     def __next__(self) -> Token:
-        # -- Broadcast that the tokenizer is done after the end of the source code.
+        # Signal that the tokenizer is done after the end of the source code.
         if self.current >= self.end:
             raise StopIteration
 
-        # -- Get the token kind and set the start and end positions of the next token.
+        # Get the token kind and set the start and end positions of the next token.
         curr_char = self.curr_char
 
         if self.source.startswith("//", self.current):
@@ -167,21 +167,21 @@ class Tokenizer:
             msg = "Invalid token."
             raise CSyntaxError(msg, self._get_current_location())
 
-        # -- Construct the token.
+        # Construct the token.
         tok_value = self.source[self.previous : self.current]
         col_offset = self.previous - self._current_line_start
         end_col_offset = self.current - self._current_line_start
 
         tok = Token(tok_kind, tok_value, self.lineno, col_offset, end_col_offset, self.filename)
 
-        # -- Update position trackers.
+        # Update position trackers.
         self.previous = self.current
 
         if tok_kind is TokenKind.NL:
             self.lineno += 1
             self._current_line_start = self.current
 
-        # -- Return the token.
+        # Return the token.
         return tok
 
     # region ---- Helpers ----

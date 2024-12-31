@@ -6,7 +6,7 @@ from pprint import pprint
 from pycc.tokenizer import Tokenizer
 
 
-class TimeCatch:
+class TimeCatcher:
     elapsed: float
 
     def __init__(self):
@@ -27,7 +27,7 @@ def lexing_example() -> None:
 
     tokenizer = Tokenizer(file_source, file_name)
 
-    with TimeCatch() as tc:
+    with TimeCatcher() as tc:
         tokens = list(tokenizer)
 
     pprint(tokens)
