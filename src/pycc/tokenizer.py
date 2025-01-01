@@ -1,11 +1,13 @@
-# TODO: Switch to operating on bytes. That could be faster because of the following:
-#   - Tokens could avoid the overhead of string slicing by receiving memoryview instead.
+# TODO: Consider operating on bytes?
+# - Could be faster and/or more memory efficient.
+#   - e.g. Token construction could avoid the overhead of string slicing by receiving memoryview instead.
+# - Might make inspection worse, which we don't want.
 
 from __future__ import annotations
 
 from itertools import islice
 
-from ._compat import Optional, Self
+from ._typing_compat import Optional, Self
 from .errors import CSyntaxError
 from .token import PUNCTUATION_TOKEN_MAP, CharSets, Token, TokenKind
 
@@ -26,7 +28,7 @@ def _replace_line_continuations(source: str, /) -> str:
             line_cont_count += 1
 
         elif line_cont_count:
-            # Splice together consecutive lines that originally ended with line continuations.
+            # Splice together consecutive lines that were originally joined by line continuations.
             fixed_lines[-line_cont_count:] = ["".join((*fixed_lines[-line_cont_count:], line))]
 
             # Pad with newlines to match the number of line continuations so far.
@@ -64,7 +66,7 @@ class Tokenizer:
     previous: int
         The index of the start of the token currently being processed.
     current: int
-        The index of the current character in the given source.
+        The current index in the given source.
     end: int
         The length of the entire source (after modification).
     lineno: int
@@ -81,9 +83,10 @@ class Tokenizer:
             - [x] "\\n" (Unix)
             - [x] "\\r\\n" (Windows)
             - [x] "\\r" (older MacOS?)
-        - [] Line continuations.
+        - [] Line continuations, i.e. line-ending escaped newlines.
         - [] Universal escape sequences (starting with \\u or \\U) in identifiers, char constants, and string literals.
         - [] Other escape sequences in char constants and string literals.
+        - [] Missing ending newlines.
         - [] Digraphs and trigraphs (optional).
     """
 
@@ -102,7 +105,7 @@ class Tokenizer:
         self.end = len(self.source)
         self.lineno = 1
 
-        #: The index for the start of the current line.
+        #: The index of the first character of the current line.
         self._current_line_start: int = 0
 
     @property
@@ -126,41 +129,40 @@ class Tokenizer:
         curr_char = self.curr_char
 
         if self.source.startswith("//", self.current):
-            self.tk_line_comment()
+            self.line_comment()
             tok_kind = TokenKind.COMMENT
 
         elif self.source.startswith("/*", self.current):
-            self.tk_block_comment()
+            self.block_comment()
             tok_kind = TokenKind.COMMENT
 
         elif curr_char in "\r\n":
-            self.tk_newline()
+            self.newline()
             tok_kind = TokenKind.NL
 
-        # TODO: str.isspace() covers too much. Narrow down the exact characters that count as whitespace.
-        elif curr_char.isspace():
-            self.tk_whitespace()
+        elif curr_char in CharSets.non_nl_whitespace:
+            self.whitespace()
             tok_kind = TokenKind.WS
 
         elif curr_char.isdecimal() or (curr_char == "." and ((peek := self._peek()) is not None) and peek.isdecimal()):
-            self.tk_numeric_literal()
+            self.numeric_literal()
             tok_kind = TokenKind.PP_NUM
 
         elif self.source.startswith(('"', 'u8"', 'u"', 'L"', 'W"'), self.current):
-            self.tk_string_literal()
+            self.string_literal()
             tok_kind = TokenKind.STRING_LITERAL
 
         elif self.source.startswith(("'", "u'", "L'", "U'"), self.current):
-            self.tk_char_const()
+            self.char_const()
             tok_kind = TokenKind.CHAR_CONST
 
         elif CharSets.can_start_identifier(curr_char):
-            self.tk_identifier()
+            self.identifier()
             tok_kind = TokenKind.ID
 
         elif curr_char in CharSets.punctuation1:
             # Some punctuators overlap with different lengths. Verify the exact one.
-            self.tk_punctuation()
+            self.punctuation()
             tok_kind = PUNCTUATION_TOKEN_MAP[self.source[self.previous : self.current]]
 
         else:
@@ -169,9 +171,7 @@ class Tokenizer:
 
         # Construct the token.
         tok_value = self.source[self.previous : self.current]
-        col_offset = self.previous - self._current_line_start
-        end_col_offset = self.current - self._current_line_start
-
+        col_offset, end_col_offset = self._get_current_offset()
         tok = Token(tok_kind, tok_value, self.lineno, col_offset, end_col_offset, self.filename)
 
         # Update position trackers.
@@ -184,7 +184,7 @@ class Tokenizer:
         # Return the token.
         return tok
 
-    # region ---- Helpers ----
+    # region ---- Internal helpers ----
 
     def _peek(self) -> Optional[str]:
         """Return the next character in the source if it exists. Otherwise, return None."""
@@ -194,10 +194,19 @@ class Tokenizer:
         else:
             return None
 
+    def _get_current_offset(self) -> tuple[int, int]:
+        """Get the start and end offset of the current potential token relative to start of the current line."""
+
+        # fmt: off
+        col_offset     = self.previous - self._current_line_start
+        end_col_offset = self.current  - self._current_line_start
+        # fmt: on
+        return (col_offset, end_col_offset)
+
     def _get_current_location(self) -> tuple[str, str, int, int, int]:
         """Give location information about the current potential token.
 
-        This is usually used to augment displayed syntax error information.
+        This is usually passed into CSyntaxError.
 
         Returns
         -------
@@ -205,11 +214,10 @@ class Tokenizer:
             A tuple with the filename, line text, line number, column offset, and end column offset.
         """
 
-        # TODO: Check if this is wrong; I don't think it finds the relevant *unescaped* newline.
+        # TODO: Confirm that this is correct; I don't think it finds the relevant *unescaped* newline.
         line_text = self.source.splitlines()[self.lineno - 1]
 
-        col_offset = self.previous - self._current_line_start
-        end_col_offset = self.current - self._current_line_start
+        col_offset, end_col_offset = self._get_current_offset()
         return (self.filename, line_text, self.lineno, col_offset, end_col_offset)
 
     def _find_quote_end(self) -> None:
@@ -233,7 +241,7 @@ class Tokenizer:
             msg = f"Unclosed {quote_type}."
             raise CSyntaxError(msg, self._get_current_location()) from None
 
-        # The quote must be entirely on one logical line. Ensure it doesn't contain any unescaped newlines.
+        # Ensure the quote is entirely on one logical line, i.e. that it doesn't contain any unescaped newlines.
         if any(
             (char == "\r" and self.source[i - 1] != "\\") or (char == "\n" and self.source[i - 1] not in "\\\r")
             for i, char in enumerate(islice(self.source, quote_start, self.current), start=quote_start)
@@ -245,14 +253,14 @@ class Tokenizer:
 
     # region ---- Token position handlers ----
 
-    def tk_line_comment(self) -> None:
+    def line_comment(self) -> None:
         """Handle a line comment, which starts with "//"."""
 
         self.current += 2
         potential_ends = (self.source.find("\r", self.current), self.source.find("\n", self.current), self.end)
         self.current = min(i for i in potential_ends if i != -1)
 
-    def tk_block_comment(self) -> None:
+    def block_comment(self) -> None:
         """Handle a block comment, which starts with "/*", ends with "*/", and can span multiple lines."""
 
         self.current += 2
@@ -265,7 +273,7 @@ class Tokenizer:
         else:
             self.current = comment_end + 2
 
-    def tk_newline(self) -> None:
+    def newline(self) -> None:
         """Handle a newline. A newline can be "\\n", "\\r\\n", or "\\r"."""
 
         # Account for DOS-style line endings.
@@ -275,15 +283,18 @@ class Tokenizer:
         if self.curr_char == "\n":
             self.current += 1
 
-    def tk_whitespace(self) -> None:
+    def whitespace(self) -> None:
         """Handle unimportant whitespace."""
 
         self.current += 1
 
         # Get the index of the next non-whitespace character.
-        self.current = next((i for i in range(self.current, self.end) if not self.source[i].isspace()), self.current)
+        self.current = next(
+            (i for i in range(self.current, self.end) if self.source[i] not in CharSets.non_nl_whitespace),
+            self.current,
+        )
 
-    def tk_numeric_literal(self) -> None:
+    def numeric_literal(self) -> None:
         """Handle a somewhat relaxed numeric literal. These will be replaced during preprocessing."""
 
         self.current += 1
@@ -296,7 +307,7 @@ class Tokenizer:
             else:
                 break
 
-    def tk_identifier(self) -> None:
+    def identifier(self) -> None:
         """Handle an identifier/keyword."""
 
         self.current += 1
@@ -307,7 +318,7 @@ class Tokenizer:
             self.current,
         )
 
-    def tk_punctuation(self) -> None:
+    def punctuation(self) -> None:
         """Handle a punctuator."""
 
         # We have to increment by the exact length of the identifier, so we check the longest ones first.
@@ -322,7 +333,7 @@ class Tokenizer:
             msg = "Invalid punctuation."
             raise CSyntaxError(msg, self._get_current_location())
 
-    def tk_string_literal(self) -> None:
+    def string_literal(self) -> None:
         """Handle a string literal, which can be utf-8, utf-16, wide, or utf-32."""
 
         # Move past the prefix so that the quote starter is the current character.
@@ -333,7 +344,7 @@ class Tokenizer:
 
         self._find_quote_end()
 
-    def tk_char_const(self) -> None:
+    def char_const(self) -> None:
         """Handle a character constant, which can be utf-8, utf-16, wide, or utf-32."""
 
         # Move past the prefix so that the quote starter is the current character.

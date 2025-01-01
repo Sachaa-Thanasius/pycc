@@ -1,4 +1,4 @@
-# TODO: Make the warnings more ergonomic to use and receieve. For the latter, maybe have them be opt-in?
+# TODO: Make the warnings more ergonomic to use and receive. Can they be made opt-in?
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import warnings
 from collections.abc import Generator, Iterable, Iterator
 from itertools import chain, takewhile, tee
 
-from ._compat import Optional, Self
+from ._typing_compat import Optional, Self
 from .errors import CPreprocessorWarning, CSyntaxError, CSyntaxWarning
 from .token import Token, TokenKind
 from .tokenizer import Tokenizer
@@ -20,7 +20,7 @@ class Macro:
     pass
 
 
-def _is_not_ws(tok: Token, /) -> bool:
+def _is_not_space(tok: Token, /) -> bool:
     """Determine if the given token is non-newline whitespace."""
 
     return tok.kind not in {TokenKind.WS, TokenKind.COMMENT}
@@ -28,6 +28,46 @@ def _is_not_ws(tok: Token, /) -> bool:
 
 def _is_pp_directive_hash(curr_tok: Token, prev_tok: Optional[Token], /) -> bool:
     return (curr_tok.kind is TokenKind.PP_OCTO) and (prev_tok is None or prev_tok.kind is TokenKind.NL)
+
+
+# TODO: Evaluate the below way to make directive handler dispatch simpler and more extensible:
+#
+#   1. Create an internal list that associates "complicated" directive checker functions with directive handler names.
+#      "Complicated" means anything beyond a string equalityh check with the value of the first directive name token.
+#
+#       - e.g. for "pragma once", an entry could be (_matches_pragma_once, "pp_pragma_once").
+#       - There can be a public decorator available that adds such a checker to the internal table?
+#           - Reference: discord.py's commands.Cog.listener()
+#       - All checkers in the list could be run through, and if nothing matches, default to the value of the first
+#         directive name token (prepended with "pp_")::
+#           directive_name_tok: Token = ...
+#           directive_name = next(
+#               (handler_name for checker, handler_name in table.items() if checker(directive_name_tok)),
+#               f"pp_{directive_name_tok.value}",
+#           )
+#
+#   2. Then, call the named directive handlers with getattr(self, directive_name)()::
+#       try:
+#           handler = getattr(self, directive_name)
+#       except AttributeError:
+#           msg = "Invalid preprocessor directive."
+#           raise CSyntaxError.from_token(msg, directive_name_tok) from None
+#       else:
+#            handler()
+#
+# Pros:
+#   - Makes changing the behavior of __next__ more ergonomic in the current class and in subclasses. For the latter
+#     especially, since they currently have to reimplement the entire method to add a new directive handler.
+#       - Do we actually want Preprocessor to be an extensible public API?
+#
+# Cons:
+#   - Introduces new edge cases.
+#   - Might introduce performance penalties.
+#       - Everything is more dynamic, potentially making it harder for the interpreter to optimize.
+#       - Involves way more function calls.
+#
+# Other:
+#   - Not sure if it makes initial implementation easier or harder?
 
 
 class Preprocessor:
@@ -46,7 +86,7 @@ class Preprocessor:
     Attributes
     ----------
     raw_tokens: Iterator[Token]
-        An iterator of unpreprocessed tokens.
+        The iterator of tokens being preprocessed.
     local_dir: str
         The directory to consider as the current working directory for the purpose of include path searching.
     include_search_dirs: list[str]
@@ -74,7 +114,7 @@ class Preprocessor:
         self._prev_tok: Optional[Token] = None
         #: A set of files that guard inclusion via "#pragma once".
         self._pragma_once_paths: set[str] = set()
-        #: A set of files that guard inclusion via "#ifndef".
+        #: A set of files that guard inclusion via the common "#ifndef" pattern.
         self._include_guarded_paths: set[str] = set()
         #: The index within include_search_dirs that the "#include_next" directive will start searching from.
         self._include_next_index: int = 0
@@ -83,14 +123,15 @@ class Preprocessor:
         return self
 
     def __next__(self) -> Token:  # noqa: PLR0912
+        # Loop until a token is found that isn't a macro, a preprocessor directive, or whitespace. Return that.
         for self.curr_tok in self.raw_tokens:  # noqa: B020 # False positive.
-            # Case 1: Expand a macro.
             if self._is_macro(self.curr_tok):
                 self._expand_macro()
 
-            # Case 2: Process a preprocessor directive.
             elif _is_pp_directive_hash(self.curr_tok, self._prev_tok):
-                directive_name_tok = next(filter(_is_not_ws, self.raw_tokens), None)
+                # Invariant: Only the first token of a directive name is fully consumed here. Handlers can internally
+                # forward as much as they wish, e.g. pragma once.
+                directive_name_tok = next(filter(_is_not_space, self.raw_tokens), None)
 
                 if directive_name_tok is None:
                     msg = "Missing preprocessor directive."
@@ -99,39 +140,31 @@ class Preprocessor:
                 if directive_name_tok.kind is TokenKind.NL:
                     # Allow null directives.
                     pass
-
                 elif directive_name_tok.value == "include":
                     self.pp_include()
-
+                elif directive_name_tok.value == "include_next":
+                    self.pp_include_next()
                 elif (
                     directive_name_tok.value == "pragma"
                     and (peek := self._peek(skip_ws=True)) is not None
                     and peek.value == "once"
                 ):
-                    # Forward to "once" since its presence is confirmed.
-                    self.curr_tok = next(filter(_is_not_ws, self.raw_tokens))  # noqa: PLW2901
                     self.pp_pragma_once()
-
                 elif directive_name_tok.value == "pragma":
                     self.pp_pragma()
-
                 elif directive_name_tok.value == "error":
                     self.pp_error()
-
                 elif directive_name_tok.value == "warning":
                     self.pp_warning()
-
                 else:
                     msg = "Invalid preprocessor directive."
                     raise CSyntaxError.from_token(msg, directive_name_tok)
 
                 self._prev_tok = self.curr_tok
 
-            # Case 3: Ignore whitespace.
             elif self.curr_tok.kind in {TokenKind.NL, TokenKind.WS, TokenKind.COMMENT}:
                 self._prev_tok = self.curr_tok
 
-            # Default: Return the current token.
             else:
                 self._prev_tok = self.curr_tok
                 return self.curr_tok
@@ -139,22 +172,27 @@ class Preprocessor:
         # Signal that the preprocessor is done after the end of the token stream.
         raise StopIteration
 
-    # region ---- Helpers ----
+    # region ---- Internal helpers ----
 
     def _peek(self, *, skip_ws: bool = True) -> Optional[Token]:
+        """Peek at the next token without consuming it.
+
+        Optionally specify whether to find the next non-whitespace token.
+        """
+
         self.raw_tokens, forked_tokens = tee(self.raw_tokens)
         if skip_ws:
-            return next(filter(_is_not_ws, forked_tokens), None)
+            return next(filter(_is_not_space, forked_tokens), None)
         else:
             return next(forked_tokens, None)
 
     def _prepend(self, other_tokens: Iterable[Token], /) -> None:
         self.raw_tokens = chain(other_tokens, self.raw_tokens)
 
-    def _skip_line(self) -> None:
-        """Skip tokens until the next newline is found.
+    def _skip_line_with_warning(self) -> None:
+        """Skip tokens until the next newline is found. Warn if any tokens are found.
 
-        This is for directives where extra tokens are technically allowed before the newline ends them.
+        This is for directives that technically allow extra tokens after they are done but before the newline.
         """
 
         next_tok = next(self.raw_tokens, None)
@@ -181,7 +219,7 @@ class Preprocessor:
             parsed_include_name = name_start_tok.value[1:-1]
             is_quoted = True
 
-            self._skip_line()
+            self._skip_line_with_warning()
 
         # Case 2: #include <foo.h>
         elif name_start_tok.kind is TokenKind.LE:
@@ -249,6 +287,8 @@ class Preprocessor:
         return include_name
 
     def _tokens_with_temp_local_dir(self, include_path: str, include_source: str, /) -> Generator[Token]:
+        # TODO: There's no hook to exchange the Tokenizer class with another one. Can one be provided? Should one?
+
         _orig_local_dir = self.local_dir
         self.local_dir = os.path.dirname(include_path)
         try:
@@ -263,20 +303,21 @@ class Preprocessor:
     def pp_include(self) -> None:
         """#include directive: Find the included file and prepend its preprocessed tokens to our tokens."""
 
-        include_name_start_tok = next(filter(_is_not_ws, self.raw_tokens))
+        include_name_start_tok = next(filter(_is_not_space, self.raw_tokens))
         include_name, is_quoted = self._read_include_name(include_name_start_tok)
         include_path = self._find_include_path(include_name, is_quoted=is_quoted)
 
-        try:
-            if (include_path not in self._pragma_once_paths) and (include_path not in self._include_guarded_paths):
+        if (include_path not in self._pragma_once_paths) and (include_path not in self._include_guarded_paths):
+            try:
+                # TODO: Cache successfully read include paths to avoid future searches with tons of stat calls.
                 with open(include_path) as fp:
                     include_source = fp.read()
-
+            except OSError as exc:
+                if not self.ignore_missing_includes:
+                    msg = f"Cannot open included file: {include_path!r}"
+                    raise CSyntaxError.from_token(msg, include_name_start_tok) from exc
+            else:
                 self._prepend(self._tokens_with_temp_local_dir(include_source, include_path))
-        except OSError as exc:
-            if not self.ignore_missing_includes:
-                msg = f"Cannot open included file: {include_path!r}"
-                raise CSyntaxError.from_token(msg, include_name_start_tok) from exc
 
     def pp_include_next(self) -> None:
         """#include_next directive: Find the included file and prepend its preprocessed tokens to our tokens.
@@ -286,20 +327,21 @@ class Preprocessor:
         This is a common but *non-standard* directive.
         """
 
-        include_name_start_tok = next(filter(_is_not_ws, self.raw_tokens))
+        include_name_start_tok = next(filter(_is_not_space, self.raw_tokens))
         include_name, _ = self._read_include_name(include_name_start_tok)
         include_path = self._find_include_next_path(include_name)
 
-        try:
-            if (include_path not in self._pragma_once_paths) and (include_path not in self._include_guarded_paths):
+        if (include_path not in self._pragma_once_paths) and (include_path not in self._include_guarded_paths):
+            try:
+                # TODO: Cache successfully read include paths to avoid future searches with tons of stat calls.
                 with open(include_path) as fp:
                     include_source = fp.read()
-
+            except OSError as exc:
+                if not self.ignore_missing_includes:
+                    msg = f"Cannot open included file: {include_path!r}"
+                    raise CSyntaxError.from_token(msg, include_name_start_tok) from exc
+            else:
                 self._prepend(self._tokens_with_temp_local_dir(include_source, include_path))
-        except OSError as exc:
-            if not self.ignore_missing_includes:
-                msg = f"Cannot open included file: {include_path!r}"
-                raise CSyntaxError.from_token(msg, include_name_start_tok) from exc
 
     def pp_define(self) -> None:
         raise NotImplementedError
@@ -337,13 +379,16 @@ class Preprocessor:
         This is a common but *non-standard* directive that is used as an alternative to standard #ifndef include guards.
         """
 
+        # Forward to "once" since its presence is confirmed.
+        self.curr_tok = next(filter(_is_not_space, self.raw_tokens))
+
         self._pragma_once_paths.add(self.curr_tok.filename)
-        self._skip_line()
+        self._skip_line_with_warning()
 
     def pp_pragma(self) -> None:
         """#pragma directive: Ignore and skip to the next line."""
 
-        # NOTE: Capturing pragmas might be useful for static analysis. Something to consider.
+        # FIXME: Actually capture pragmas.
 
         self.curr_tok = next(t for t in self.raw_tokens if t.kind is TokenKind.NL)
 
@@ -359,6 +404,6 @@ class Preprocessor:
         if (peek := self._peek(skip_ws=True)) is not None and (peek.kind is TokenKind.STRING_LITERAL):
             warnings.warn_explicit(peek.value, CPreprocessorWarning, peek.filename, peek.lineno)
 
-        self._skip_line()
+        self._skip_line_with_warning()
 
     # endregion ----

@@ -1,4 +1,4 @@
-"""Compatibility shim for typing- and annotation-related symbols, to avoid ever importing typing."""
+"""Compatibility shim for typing- and annotation-related symbols, to avoid importing from typing."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ if TYPE_CHECKING:
     from typing_extensions import Self, TypeAlias
 else:
 
-    def cast(typ: Any, val: Any) -> Any:
+    def cast(typ: object, val: object) -> object:
         return val
 
     class Any(metaclass=_PlaceholderMeta):

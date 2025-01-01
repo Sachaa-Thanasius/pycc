@@ -1,6 +1,6 @@
 """Custom exceptions and warnings related to the parser."""
 
-from ._compat import Self
+from ._typing_compat import Self
 from .token import Token
 
 

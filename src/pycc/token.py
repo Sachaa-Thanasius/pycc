@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ._compat import TYPE_CHECKING
+from ._typing_compat import TYPE_CHECKING
 
 
 if TYPE_CHECKING:
@@ -45,7 +45,6 @@ class TokenKind(Enum):
     INT                 = auto()
     LONG                = auto()
     REGISTER            = auto()
-    OFFSETOF            = auto()
     RESTRICT            = auto()
     RETURN              = auto()
     SHORT               = auto()
@@ -196,7 +195,6 @@ KEYWORD_TOKEN_MAP = {
     "inline":           TokenKind.INLINE,
     "int":              TokenKind.INT,
     "long":             TokenKind.LONG,
-    "offsetof":         TokenKind.OFFSETOF,  # NOTE: Not in the C11 spec?
     "register":         TokenKind.REGISTER,
     "restrict":         TokenKind.RESTRICT,
     "return":           TokenKind.RETURN,
@@ -307,13 +305,16 @@ class Token:
     lineno: int
         The line number of the file that the token is on. 1-indexed.
     col_offset: int
+        Where the token starts relative to the start of the line.
     end_col_offset: int
+        Where the token ends relative to the start of the line.
     filename: str
+        What file the token comes from.
     """
 
     __slots__ = ("kind", "value", "lineno", "col_offset", "end_col_offset", "filename")
 
-    def __init__(  # noqa: PLR0913
+    def __init__(  # noqa: PLR0913 # Tokens are dense currently.
         self,
         kind: TokenKind,
         value: str,
@@ -331,26 +332,38 @@ class Token:
 
     @property
     def end_lineno(self) -> int:
+        # FIXME: This doesn't match how a few things are handled in the tokenizer, e.g. block comments, line endings.
+
         return self.lineno + self.value.count("\n")
 
-    def __repr__(self) -> str:
-        attrs = ("kind", "value", "lineno", "col_offset", "end_col_offset")
-        return f'{type(self).__name__}({", ".join(f"{attr}={getattr(self, attr)!r}" for attr in attrs)})'
+    def __repr__(self):
+        return "".join(
+            (
+                f"{self.__class__.__name__}(",
+                ", ".join(
+                    (
+                        f"kind={self.kind!r}",
+                        f"value={self.value!r}",
+                        f"lineno={self.lineno!r}",
+                        f"col_offset={self.col_offset!r}",
+                        f"end_col_offset={self.end_col_offset!r}",
+                    )
+                ),
+                ")",
+            )
+        )
 
 
 class CharSets:
-    ignored_whitespace = frozenset(" \t")
+    non_nl_whitespace = frozenset(" \t")
 
-    ascii_lowercase = "abcdefghijklmnopqrstuvwxyz"
-    ascii_uppercase = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    ascii_letters = ascii_lowercase + ascii_uppercase
+    ascii_lowercase = frozenset("abcdefghijklmnopqrstuvwxyz")
+    ascii_uppercase = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+    ascii_letters = ascii_lowercase | ascii_uppercase
 
-    digits = "0123456789"
-    hex_digits = digits + "abcdef" + "ABCDEF"
-    oct_digits = "01234567"
-    bin_digits = "01"
+    digits = frozenset("0123456789")
 
-    alphanumeric = ascii_letters + digits
+    alphanumeric = ascii_letters | digits
 
     punctuation1 = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"""
     punctuation2 = tuple(chars for chars in PUNCTUATION_TOKEN_MAP if len(chars) == 2)
@@ -408,11 +421,11 @@ class CharSets:
     def can_start_identifier(cls, char: str, /) -> bool:
         return (
             (char in cls.ascii_letters)
-            or (char in "_$\u00a8\u00aa\u00ad\u00af")
+            or (char in {"_", "$", "\u00a8", "\u00aa", "\u00ad", "\u00af"})
             or any(lower <= char <= upper for lower, upper in cls._identifier_start_ranges)
         )
 
-    _identifier_end_ranges = (
+    _extra_identifier_end_ranges = (
         ("\u0300", "\u036f"),
         ("\u1dc0", "\u1dff"),
         ("\u20d0", "\u20ff"),
@@ -424,5 +437,5 @@ class CharSets:
         return (
             cls.can_start_identifier(char)
             or char in cls.digits
-            or any(lower <= char <= upper for lower, upper in cls._identifier_end_ranges)
+            or any(lower <= char <= upper for lower, upper in cls._extra_identifier_end_ranges)
         )

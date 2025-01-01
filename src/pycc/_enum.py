@@ -47,7 +47,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, MutableMapping
 
-from ._compat import TYPE_CHECKING, Any, TypeAlias, Union, cast
+from ._typing_compat import TYPE_CHECKING, Any, TypeAlias, Union, cast
 
 
 if TYPE_CHECKING:
@@ -267,7 +267,7 @@ class EnumMeta(type):
         *,
         module: str | None = None,
         qualname: str | None = None,
-        type: type | None = None,
+        type: type | None = None,  # noqa: A002
         start: int = 1,
     ):
         """Create an enum using the equivalent functional API for ``enum.Enum``."""
