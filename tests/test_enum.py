@@ -40,10 +40,10 @@ import pickle
 
 import pytest
 
-from pycc import _enum
+from pycc import _enum as internal_enum
 
 
-@pytest.mark.parametrize("create", [enum.Enum, _enum.Enum._create_])
+@pytest.mark.parametrize("create", [enum.Enum, internal_enum.Enum._create_])
 class TestCreate:
     def test_name(self, create):
         enum_ = create("a", [])
@@ -103,7 +103,7 @@ class TestCreate:
         assert enum_.v3.value == 11
 
 
-@pytest.mark.parametrize("module", [enum, _enum])
+@pytest.mark.parametrize("module", [enum, internal_enum])
 class TestClass:
     def test_auto(self, module):
         class Enum(module.Enum):
@@ -130,7 +130,7 @@ class TestClass:
         next_values = []
 
         class AutoEnum(module.Enum):
-            def _generate_next_value_(*args):
+            def _generate_next_value_(*args: object):
                 next_values.append(args)
                 return args[0]
 
@@ -205,8 +205,10 @@ class TestClass:
         class Enum(module.Enum):
             names = ()
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError) as exc_info:  # noqa: PT011 # The exception text is checked.
             Enum(42)
+
+        assert exc_info.value.args[0] == f"42 is not a valid {Enum.__qualname__}"
 
     def test_getitem_success(self, module):
         class Enum(module.Enum):
@@ -236,10 +238,10 @@ class TestBasicEnumClass:
         Python 3.13.
         """
 
-        class Enum(_enum.Enum):
-            v1 = _enum.auto()
+        class Enum(internal_enum.Enum):
+            v1 = internal_enum.auto()
             v2 = "5"
-            v3 = _enum.auto()
+            v3 = internal_enum.auto()
 
         assert Enum.v1.value == 1
         assert Enum.v2.value == "5"
@@ -251,9 +253,9 @@ class StdlibEnum(enum.Enum):
     v2 = enum.auto()
 
 
-class PyCCEnum(_enum.Enum):
-    v1 = _enum.auto()
-    v2 = _enum.auto()
+class PyCCEnum(internal_enum.Enum):
+    v1 = internal_enum.auto()
+    v2 = internal_enum.auto()
 
 
 @pytest.mark.parametrize("enum_", [StdlibEnum, PyCCEnum])
@@ -268,8 +270,8 @@ class TestMember:
         assert enum_.v1 != enum_.v2
 
     def test_similar_eq(self, enum_):
-        class TestEnum(_enum.Enum):
-            v1 = _enum.auto()
+        class TestEnum(internal_enum.Enum):
+            v1 = internal_enum.auto()
 
         assert enum_.v1 != TestEnum.v1
 
@@ -289,15 +291,17 @@ class TestMember:
         assert hash(enum_.v1) == hash(enum_.v1)
 
     def test_pickle(self, enum_):
-        roundtrip = pickle.loads(pickle.dumps(enum_.v1))  # noqa: S301
+        roundtrip = pickle.loads(pickle.dumps(enum_.v1))  # noqa: S301 # It's for testing.
         assert roundtrip is enum_.v1
 
 
-@pytest.mark.parametrize("module", [enum, _enum])
+@pytest.mark.parametrize("module", [enum, internal_enum])
 def test_unique(module):
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as exc_info:  # noqa: PT011 # The exception text is checked.
 
         @module.unique
         class Enum(module.Enum):
             answer = 42
             answer_again = 42
+
+    assert exc_info.value.args[0].startswith("duplicate values found in <enum 'Enum'>:")

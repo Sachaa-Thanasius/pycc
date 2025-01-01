@@ -216,7 +216,7 @@ class EnumMeta(type):
         try:
             return self._value2member_map_[value]
         except KeyError:
-            msg = f"no enum member with a value of {value!r}"
+            msg = f"{value!r} is not a valid {self.__qualname__}"
             raise ValueError(msg) from None
 
     def __getitem__(self, name: str, /) -> EnumMember:
@@ -322,7 +322,7 @@ def unique(cls: type[Enum]) -> type[Enum]:
     for member in cls._member_map_.values():
         value = member.value
         if value in seen:
-            msg = f"{cls!r} enum reused {value!r}"
+            msg = f"duplicate values found in {cls!r}: {value!r}"
             raise ValueError(msg)
 
         seen.append(value)
