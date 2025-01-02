@@ -205,7 +205,12 @@ class EnumMeta(type):
 
     @property
     def __members__(self) -> MappingProxyType[str, Any]:
-        return MappingProxyType(self._member_map_)
+        # Cache proxy to avoid rewrapping on every call.
+        try:
+            return self._proxied_member_map
+        except AttributeError:
+            self._proxied_member_map = members = MappingProxyType(self._member_map_)
+            return members
 
     def __repr__(self) -> str:
         return f"<enum {self.__name__!r}>"
@@ -232,10 +237,12 @@ class EnumMeta(type):
     def __iter__(self):
         """Iterate through the members."""
 
-        return iter(self._member_map_[name] for name in self._member_names_)
+        for name in self._member_names_:
+            yield self._member_map_[name]
 
     def __reversed__(self):
-        return iter(self._member_map_[name] for name in reversed(self._member_names_))
+        for name in reversed(self._member_names_):
+            yield self._member_map_[name]
 
     def __len__(self) -> int:
         return len(self._member_names_)

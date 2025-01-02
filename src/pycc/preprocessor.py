@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import warnings
 from collections.abc import Callable, Generator, Iterable, Iterator
-from functools import reduce
 from itertools import chain, takewhile, tee
 
 from ._typing_compat import ClassVar, Optional, Self, TypeAlias
@@ -16,7 +15,7 @@ from .tokenizer import Tokenizer
 
 _MatcherFunc: TypeAlias = Callable[["Preprocessor", Token], bool]
 
-__all__ = ("Preprocessor", "directive_matcher", "Macro")
+__all__ = ("Preprocessor", "Macro")
 
 
 def _is_not_space(tok: Token, /) -> bool:
@@ -27,32 +26,6 @@ def _is_not_space(tok: Token, /) -> bool:
 
 def _is_pp_directive_hash(curr_tok: Token, prev_tok: Optional[Token], /) -> bool:
     return (curr_tok.kind is TokenKind.PP_OCTO) and (prev_tok is None or prev_tok.kind is TokenKind.NL)
-
-
-class _DirectiveMatcher:
-    def __init__(self, directive_name: str, matcher_func: _MatcherFunc):
-        self.directive_name = directive_name
-        self.matcher_func = matcher_func
-
-    def __set_name__(self, owner: type, name: str, /) -> None:
-        if "_directive_matchers" not in owner.__dict__:
-            owner._directive_matchers = reduce(
-                lambda matcher_dict, base: getattr(base, "_directive_matchers", {}) | matcher_dict,
-                owner.__mro__,
-                {},
-            )
-
-        owner._directive_matchers[self.matcher_func] = self.directive_name  # pyright: ignore [reportUnknownMemberType]
-
-    def __get__(self, instance: object, owner: Optional[type] = None, /):
-        return self.matcher_func.__get__(instance, owner)
-
-
-def directive_matcher(directive_name: str, /) -> Callable[[_MatcherFunc], _DirectiveMatcher]:
-    def wrapper(matcher: _MatcherFunc, /) -> _DirectiveMatcher:
-        return _DirectiveMatcher(directive_name, matcher)
-
-    return wrapper
 
 
 class Macro:
@@ -113,7 +86,7 @@ class Preprocessor:
     def __iter__(self) -> Self:
         return self
 
-    def __next__(self) -> Token:
+    def __next__(self) -> Token:  # noqa: PLR0912
         # Loop until a token is found that isn't a macro, a preprocessor directive, or whitespace. Return that.
         for self.curr_tok in self.raw_tokens:  # noqa: B020 # False positive.
             if self._is_macro(self.curr_tok):
@@ -122,29 +95,36 @@ class Preprocessor:
             elif _is_pp_directive_hash(self.curr_tok, self._prev_tok):
                 # Invariant: Only the first token of a directive name is fully consumed here. Handlers can internally
                 # forward as much as they wish, e.g. pragma once.
-                directive_name_tok = next(filter(_is_not_space, self.raw_tokens), None)
+                pp_start_tok = next(filter(_is_not_space, self.raw_tokens), None)
 
-                if directive_name_tok is None:
+                if pp_start_tok is None:
                     msg = "Missing preprocessor directive."
                     raise PyCCSyntaxError.from_token(msg, self.curr_tok)
 
-                if directive_name_tok.kind is TokenKind.NL:  # Null directive.
-                    pass
-                else:
-                    directive_handler_name = next(
-                        (
-                            handler_name
-                            for matcher_func, handler_name in self.__class__._directive_matchers.items()
-                            if matcher_func(self, directive_name_tok)
-                        ),
-                        f"pp_{directive_name_tok.value}",
-                    )
+                pp_start_value = pp_start_tok.value
 
-                    if (handler := getattr(self, directive_handler_name, None)) is not None:
-                        handler()
-                    else:
-                        msg = "Invalid preprocessor directive."
-                        raise PyCCSyntaxError.from_token(msg, directive_name_tok)
+                if pp_start_tok.kind is TokenKind.NL:
+                    # Null directive.
+                    pass
+                elif pp_start_value == "include":
+                    self.pp_include()
+                elif pp_start_value == "include_next":
+                    self.pp_include_next()
+                elif (
+                    pp_start_value == "pragma"
+                    and (peek := self._peek(skip_ws=True)) is not None
+                    and peek.value == "once"
+                ):
+                    self.pp_pragma_once()
+                elif pp_start_value == "pragma":
+                    self.pp_pragma()
+                elif pp_start_value == "error":
+                    self.pp_error()
+                elif pp_start_value == "warning":
+                    self.pp_warning()
+                else:
+                    msg = "Invalid preprocessor directive."
+                    raise PyCCSyntaxError.from_token(msg, pp_start_tok)
 
                 self._prev_tok = self.curr_tok
 
@@ -281,18 +261,6 @@ class Preprocessor:
             yield from Tokenizer(include_source, include_path)
         finally:
             self.local_dir = _orig_local_dir
-
-    # endregion ----
-
-    # region ---- Directive matchers ----
-
-    @directive_matcher("pp_pragma_once")
-    def match_pragma_once(self, directive_name_tok: Token, /) -> bool:
-        return (
-            directive_name_tok.value == "pragma"
-            and (peek := self._peek(skip_ws=True)) is not None
-            and peek.value == "once"
-        )
 
     # endregion ----
 
