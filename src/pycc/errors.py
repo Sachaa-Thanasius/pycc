@@ -6,10 +6,10 @@ from .token import Token
 
 __all__ = (
     "PyCCError",
-    "CSyntaxError",
+    "PyCCSyntaxError",
     "PyCCWarning",
-    "CSyntaxWarning",
-    "CPreprocessorWarning",
+    "PyCCSyntaxWarning",
+    "PyCCPreprocessorWarning",
 )
 
 
@@ -17,7 +17,7 @@ class PyCCError(Exception):
     """Base exception class for pycc."""
 
 
-class CSyntaxError(PyCCError):
+class PyCCSyntaxError(PyCCError):
     """Exception raised when a fatal issue is encountered while parsing C.
 
     Parameters
@@ -72,7 +72,7 @@ class CSyntaxError(PyCCError):
 
     @classmethod
     def from_token(cls, msg: str, token: Token, /) -> Self:
-        with open(token.filename, encoding="utf-8") as fp:
+        with open(token.filename) as fp:
             line_text = next(line for i, line in enumerate(fp, start=1) if i == token.lineno)
         return cls(msg, (token.filename, line_text, token.lineno, token.col_offset, token.end_col_offset))
 
@@ -81,9 +81,9 @@ class PyCCWarning(Warning):
     """Base warning class for pycc."""
 
 
-class CSyntaxWarning(PyCCWarning):
-    """Warnings related to issues encountered while parsing C."""
+class PyCCSyntaxWarning(PyCCWarning):
+    """Warning emitted while parsing C when a noncritical issue is encountered."""
 
 
-class CPreprocessorWarning(PyCCWarning):
-    """Warnings raised during preprocessing by the #warning directive."""
+class PyCCPreprocessorWarning(PyCCWarning):
+    """Warning emitted by the "#warning" directive during preprocessing."""

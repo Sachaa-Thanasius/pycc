@@ -8,7 +8,7 @@ from __future__ import annotations
 from itertools import islice
 
 from ._typing_compat import Optional, Self
-from .errors import CSyntaxError
+from .errors import PyCCSyntaxError
 from .token import PUNCTUATION_TOKEN_MAP, CharSets, Token, TokenKind
 
 
@@ -167,7 +167,7 @@ class Tokenizer:
 
         else:
             msg = "Invalid token."
-            raise CSyntaxError(msg, self._get_current_location())
+            raise PyCCSyntaxError(msg, self._get_current_location())
 
         # Construct the token.
         tok_value = self.source[self.previous : self.current]
@@ -197,10 +197,8 @@ class Tokenizer:
     def _get_current_offset(self) -> tuple[int, int]:
         """Get the start and end offset of the current potential token relative to start of the current line."""
 
-        # fmt: off
-        col_offset     = self.previous - self._current_line_start
-        end_col_offset = self.current  - self._current_line_start
-        # fmt: on
+        col_offset     = self.previous - self._current_line_start  # fmt: skip
+        end_col_offset = self.current  - self._current_line_start  # fmt: skip
         return (col_offset, end_col_offset)
 
     def _get_current_location(self) -> tuple[str, str, int, int, int]:
@@ -239,7 +237,7 @@ class Tokenizer:
                 quote_end += 1
         except ValueError:  # Raised by index when not found.
             msg = f"Unclosed {quote_type}."
-            raise CSyntaxError(msg, self._get_current_location()) from None
+            raise PyCCSyntaxError(msg, self._get_current_location()) from None
 
         # Ensure the quote is entirely on one logical line, i.e. that it doesn't contain any unescaped newlines.
         if any(
@@ -247,7 +245,7 @@ class Tokenizer:
             for i, char in enumerate(islice(self.source, quote_start, self.current), start=quote_start)
         ):
             msg = f"Unclosed {quote_type}."
-            raise CSyntaxError(msg, self._get_current_location())
+            raise PyCCSyntaxError(msg, self._get_current_location())
 
     # endregion ----
 
@@ -269,7 +267,7 @@ class Tokenizer:
             comment_end = self.source.index("*/", self.current)
         except ValueError as exc:
             msg = "Unclosed block comment."
-            raise CSyntaxError(msg, self._get_current_location()) from exc
+            raise PyCCSyntaxError(msg, self._get_current_location()) from exc
         else:
             self.current = comment_end + 2
 
@@ -331,7 +329,7 @@ class Tokenizer:
 
         if self.source[self.previous : self.current] not in PUNCTUATION_TOKEN_MAP:
             msg = "Invalid punctuation."
-            raise CSyntaxError(msg, self._get_current_location())
+            raise PyCCSyntaxError(msg, self._get_current_location())
 
     def string_literal(self) -> None:
         """Handle a string literal, which can be utf-8, utf-16, wide, or utf-32."""

@@ -1,5 +1,3 @@
-# ruff: noqa: ERA001
-
 # TODO: Make the warnings more ergonomic to use and receive. Can they be made opt-in?
 
 from __future__ import annotations
@@ -11,7 +9,7 @@ from functools import reduce
 from itertools import chain, takewhile, tee
 
 from ._typing_compat import ClassVar, Optional, Self, TypeAlias
-from .errors import CPreprocessorWarning, CSyntaxError, CSyntaxWarning
+from .errors import PyCCPreprocessorWarning, PyCCSyntaxError, PyCCSyntaxWarning
 from .token import Token, TokenKind
 from .tokenizer import Tokenizer
 
@@ -51,7 +49,7 @@ class _DirectiveMatcher:
 
 
 def directive_matcher(directive_name: str, /) -> Callable[[_MatcherFunc], _DirectiveMatcher]:
-    def wrapper(matcher: _MatcherFunc) -> _DirectiveMatcher:
+    def wrapper(matcher: _MatcherFunc, /) -> _DirectiveMatcher:
         return _DirectiveMatcher(directive_name, matcher)
 
     return wrapper
@@ -128,7 +126,7 @@ class Preprocessor:
 
                 if directive_name_tok is None:
                     msg = "Missing preprocessor directive."
-                    raise CSyntaxError.from_token(msg, self.curr_tok)
+                    raise PyCCSyntaxError.from_token(msg, self.curr_tok)
 
                 if directive_name_tok.kind is TokenKind.NL:  # Null directive.
                     pass
@@ -146,7 +144,7 @@ class Preprocessor:
                         handler()
                     else:
                         msg = "Invalid preprocessor directive."
-                        raise CSyntaxError.from_token(msg, directive_name_tok)
+                        raise PyCCSyntaxError.from_token(msg, directive_name_tok)
 
                 self._prev_tok = self.curr_tok
 
@@ -187,7 +185,7 @@ class Preprocessor:
         if (next_tok is None) or (next_tok.kind is TokenKind.NL):
             return
 
-        warnings.warn_explicit("Extra tokens.", CSyntaxWarning, next_tok.filename, next_tok.lineno)
+        warnings.warn_explicit("Extra tokens.", PyCCSyntaxWarning, next_tok.filename, next_tok.lineno)
 
         next_line_start = next((t for t in self.raw_tokens if t.kind is TokenKind.NL), None)
         if next_line_start is not None:
@@ -217,7 +215,7 @@ class Preprocessor:
             # We could consume all the remaining tokens without finding ">", possibly without even hitting a newline.
             if not _include_path_toks or (_include_path_toks[-1].kind is not TokenKind.GE):
                 msg = "Expected closing '>' for #include."
-                raise CSyntaxError.from_token(msg, name_start_tok)
+                raise PyCCSyntaxError.from_token(msg, name_start_tok)
 
             # Remove the ">".
             del _include_path_toks[-1]
@@ -233,7 +231,7 @@ class Preprocessor:
 
         else:
             msg = "Expected filename after #include."
-            raise CSyntaxError.from_token(msg, name_start_tok)
+            raise PyCCSyntaxError.from_token(msg, name_start_tok)
 
         return parsed_include_name, is_quoted
 
@@ -275,7 +273,7 @@ class Preprocessor:
         return include_name
 
     def _tokens_with_temp_local_dir(self, include_path: str, include_source: str, /) -> Generator[Token]:
-        # TODO: There's no hook to exchange the Tokenizer class with another one. Can one be provided? Should one?
+        # TODO: There's no hook to replace the Tokenizer class with another one. Can one be provided? Should one?
 
         _orig_local_dir = self.local_dir
         self.local_dir = os.path.dirname(include_path)
@@ -315,7 +313,7 @@ class Preprocessor:
             except OSError as exc:
                 if not self.ignore_missing_includes:
                     msg = f"Cannot open included file: {include_path!r}"
-                    raise CSyntaxError.from_token(msg, include_name_start_tok) from exc
+                    raise PyCCSyntaxError.from_token(msg, include_name_start_tok) from exc
             else:
                 self._prepend(self._tokens_with_temp_local_dir(include_source, include_path))
 
@@ -339,7 +337,7 @@ class Preprocessor:
             except OSError as exc:
                 if not self.ignore_missing_includes:
                     msg = f"Cannot open included file: {include_path!r}"
-                    raise CSyntaxError.from_token(msg, include_name_start_tok) from exc
+                    raise PyCCSyntaxError.from_token(msg, include_name_start_tok) from exc
             else:
                 self._prepend(self._tokens_with_temp_local_dir(include_source, include_path))
 
@@ -396,13 +394,13 @@ class Preprocessor:
         """#error directive: Raise an error."""
 
         msg = "Preprocessing error."
-        raise CSyntaxError.from_token(msg, next(self.raw_tokens))
+        raise PyCCSyntaxError.from_token(msg, next(self.raw_tokens))
 
     def pp_warning(self) -> None:
         """#warning directive: Send a warning."""
 
         if (peek := self._peek(skip_ws=True)) is not None and (peek.kind is TokenKind.STRING_LITERAL):
-            warnings.warn_explicit(peek.value, CPreprocessorWarning, peek.filename, peek.lineno)
+            warnings.warn_explicit(peek.value, PyCCPreprocessorWarning, peek.filename, peek.lineno)
 
         self._skip_line_with_warning()
 
