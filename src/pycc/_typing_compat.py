@@ -11,7 +11,7 @@ else:
     GenericAlias = type(list[int])
 
 
-__all__ = ("TYPE_CHECKING", "Any", "Optional", "Self", "TypeAlias", "Union", "cast")
+__all__ = ("TYPE_CHECKING", "Any", "ClassVar", "Optional", "Self", "TypeAlias", "Union", "cast")
 
 
 class _PlaceholderGenericAlias(GenericAlias):
@@ -36,7 +36,7 @@ class _PlaceholderGenericMeta(_PlaceholderMeta):
 
 
 if TYPE_CHECKING:
-    from typing import Any, Optional, Union, cast
+    from typing import Any, ClassVar, Optional, Union, cast
 
     from typing_extensions import Self, TypeAlias
 else:
@@ -45,6 +45,9 @@ else:
         return val
 
     class Any(metaclass=_PlaceholderMeta):
+        _source_module = "typing"
+
+    class ClassVar(metaclass=_PlaceholderGenericMeta):
         _source_module = "typing"
 
     class Optional(metaclass=_PlaceholderGenericMeta):

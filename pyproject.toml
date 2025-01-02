@@ -110,6 +110,8 @@ unfixable = [
     "ERA", # Prevent unlikely erroneous deletion.
 ]
 
+typing-modules = ["pycc._typing_compat"]
+
 [tool.ruff.lint.isort]
 lines-after-imports = 2
 combine-as-imports = true

@@ -1,23 +1,24 @@
+# ruff: noqa: ERA001
+
 # TODO: Make the warnings more ergonomic to use and receive. Can they be made opt-in?
 
 from __future__ import annotations
 
 import os
 import warnings
-from collections.abc import Generator, Iterable, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator
+from functools import reduce
 from itertools import chain, takewhile, tee
 
-from ._typing_compat import Optional, Self
+from ._typing_compat import ClassVar, Optional, Self, TypeAlias
 from .errors import CPreprocessorWarning, CSyntaxError, CSyntaxWarning
 from .token import Token, TokenKind
 from .tokenizer import Tokenizer
 
 
-__all__ = ("Preprocessor",)
+_MatcherFunc: TypeAlias = Callable[["Preprocessor", Token], bool]
 
-
-class Macro:
-    pass
+__all__ = ("Preprocessor", "directive_matcher", "Macro")
 
 
 def _is_not_space(tok: Token, /) -> bool:
@@ -30,44 +31,34 @@ def _is_pp_directive_hash(curr_tok: Token, prev_tok: Optional[Token], /) -> bool
     return (curr_tok.kind is TokenKind.PP_OCTO) and (prev_tok is None or prev_tok.kind is TokenKind.NL)
 
 
-# TODO: Evaluate the below way to make directive handler dispatch simpler and more extensible:
-#
-#   1. Create an internal list that associates "complicated" directive checker functions with directive handler names.
-#      "Complicated" means anything beyond a string equalityh check with the value of the first directive name token.
-#
-#       - e.g. for "pragma once", an entry could be (_matches_pragma_once, "pp_pragma_once").
-#       - There can be a public decorator available that adds such a checker to the internal table?
-#           - Reference: discord.py's commands.Cog.listener()
-#       - All checkers in the list could be run through, and if nothing matches, default to the value of the first
-#         directive name token (prepended with "pp_")::
-#           directive_name_tok: Token = ...
-#           directive_name = next(
-#               (handler_name for checker, handler_name in table.items() if checker(directive_name_tok)),
-#               f"pp_{directive_name_tok.value}",
-#           )
-#
-#   2. Then, call the named directive handlers with getattr(self, directive_name)()::
-#       try:
-#           handler = getattr(self, directive_name)
-#       except AttributeError:
-#           msg = "Invalid preprocessor directive."
-#           raise CSyntaxError.from_token(msg, directive_name_tok) from None
-#       else:
-#            handler()
-#
-# Pros:
-#   - Makes changing the behavior of __next__ more ergonomic in the current class and in subclasses. For the latter
-#     especially, since they currently have to reimplement the entire method to add a new directive handler.
-#       - Do we actually want Preprocessor to be an extensible public API?
-#
-# Cons:
-#   - Introduces new edge cases.
-#   - Might introduce performance penalties.
-#       - Everything is more dynamic, potentially making it harder for the interpreter to optimize.
-#       - Involves way more function calls.
-#
-# Other:
-#   - Not sure if it makes initial implementation easier or harder?
+class _DirectiveMatcher:
+    def __init__(self, directive_name: str, matcher_func: _MatcherFunc):
+        self.directive_name = directive_name
+        self.matcher_func = matcher_func
+
+    def __set_name__(self, owner: type, name: str, /) -> None:
+        if "_directive_matchers" not in owner.__dict__:
+            owner._directive_matchers = reduce(
+                lambda matcher_dict, base: getattr(base, "_directive_matchers", {}) | matcher_dict,
+                owner.__mro__,
+                {},
+            )
+
+        owner._directive_matchers[self.matcher_func] = self.directive_name  # pyright: ignore [reportUnknownMemberType]
+
+    def __get__(self, instance: object, owner: Optional[type] = None, /):
+        return self.matcher_func.__get__(instance, owner)
+
+
+def directive_matcher(directive_name: str, /) -> Callable[[_MatcherFunc], _DirectiveMatcher]:
+    def wrapper(matcher: _MatcherFunc) -> _DirectiveMatcher:
+        return _DirectiveMatcher(directive_name, matcher)
+
+    return wrapper
+
+
+class Macro:
+    pass
 
 
 class Preprocessor:
@@ -103,6 +94,8 @@ class Preprocessor:
     ignore_missing_includes: bool
     macros: dict[str, Macro]
 
+    _directive_matchers: ClassVar[dict[_MatcherFunc, str]] = {}
+
     def __init__(self, tokens: Iterable[Token], local_dir: str = ""):
         self.raw_tokens = iter(tokens)
         self.local_dir = local_dir
@@ -122,7 +115,7 @@ class Preprocessor:
     def __iter__(self) -> Self:
         return self
 
-    def __next__(self) -> Token:  # noqa: PLR0912
+    def __next__(self) -> Token:
         # Loop until a token is found that isn't a macro, a preprocessor directive, or whitespace. Return that.
         for self.curr_tok in self.raw_tokens:  # noqa: B020 # False positive.
             if self._is_macro(self.curr_tok):
@@ -137,28 +130,23 @@ class Preprocessor:
                     msg = "Missing preprocessor directive."
                     raise CSyntaxError.from_token(msg, self.curr_tok)
 
-                if directive_name_tok.kind is TokenKind.NL:
-                    # Allow null directives.
+                if directive_name_tok.kind is TokenKind.NL:  # Null directive.
                     pass
-                elif directive_name_tok.value == "include":
-                    self.pp_include()
-                elif directive_name_tok.value == "include_next":
-                    self.pp_include_next()
-                elif (
-                    directive_name_tok.value == "pragma"
-                    and (peek := self._peek(skip_ws=True)) is not None
-                    and peek.value == "once"
-                ):
-                    self.pp_pragma_once()
-                elif directive_name_tok.value == "pragma":
-                    self.pp_pragma()
-                elif directive_name_tok.value == "error":
-                    self.pp_error()
-                elif directive_name_tok.value == "warning":
-                    self.pp_warning()
                 else:
-                    msg = "Invalid preprocessor directive."
-                    raise CSyntaxError.from_token(msg, directive_name_tok)
+                    directive_handler_name = next(
+                        (
+                            handler_name
+                            for matcher_func, handler_name in self.__class__._directive_matchers.items()
+                            if matcher_func(self, directive_name_tok)
+                        ),
+                        f"pp_{directive_name_tok.value}",
+                    )
+
+                    if (handler := getattr(self, directive_handler_name, None)) is not None:
+                        handler()
+                    else:
+                        msg = "Invalid preprocessor directive."
+                        raise CSyntaxError.from_token(msg, directive_name_tok)
 
                 self._prev_tok = self.curr_tok
 
@@ -298,6 +286,18 @@ class Preprocessor:
 
     # endregion ----
 
+    # region ---- Directive matchers ----
+
+    @directive_matcher("pp_pragma_once")
+    def match_pragma_once(self, directive_name_tok: Token, /) -> bool:
+        return (
+            directive_name_tok.value == "pragma"
+            and (peek := self._peek(skip_ws=True)) is not None
+            and peek.value == "once"
+        )
+
+    # endregion ----
+
     # region ---- Directive handlers ----
 
     def pp_include(self) -> None:
@@ -324,7 +324,7 @@ class Preprocessor:
 
         Notes
         -----
-        This is a common but *non-standard* directive.
+        This is a *non-standard* directive.
         """
 
         include_name_start_tok = next(filter(_is_not_space, self.raw_tokens))
