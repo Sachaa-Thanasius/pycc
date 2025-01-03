@@ -104,15 +104,14 @@ class Preprocessor:
                 pp_start_value = pp_start_tok.value
 
                 if pp_start_tok.kind is TokenKind.NL:
-                    # Null directive.
-                    pass
+                    pass  # Null directive.
                 elif pp_start_value == "include":
                     self.pp_include()
                 elif pp_start_value == "include_next":
                     self.pp_include_next()
                 elif (
                     pp_start_value == "pragma"
-                    and (peek := self._peek(skip_ws=True)) is not None
+                    and (peek := self._peek(skip_spaces=True)) is not None
                     and peek.value == "once"
                 ):
                     self.pp_pragma_once()
@@ -140,14 +139,14 @@ class Preprocessor:
 
     # region ---- Internal helpers ----
 
-    def _peek(self, *, skip_ws: bool = True) -> Optional[Token]:
+    def _peek(self, *, skip_spaces: bool = True) -> Optional[Token]:
         """Peek at the next token without consuming it.
 
-        Optionally specify whether to find the next non-whitespace token.
+        Optionally specify whether to find the next non-whitespace token. Newlines are not skipped.
         """
 
         self.raw_tokens, forked_tokens = tee(self.raw_tokens)
-        if skip_ws:
+        if skip_spaces:
             return next(filter(_is_not_space, forked_tokens), None)
         else:
             return next(forked_tokens, None)
@@ -155,7 +154,7 @@ class Preprocessor:
     def _prepend(self, other_tokens: Iterable[Token], /) -> None:
         self.raw_tokens = chain(other_tokens, self.raw_tokens)
 
-    def _skip_line_with_warning(self) -> None:
+    def _skip_rest_of_line(self) -> None:
         """Skip tokens until the next newline is found. Warn if any tokens are found.
 
         This is for directives that technically allow extra tokens after they are done but before the newline.
@@ -185,7 +184,7 @@ class Preprocessor:
             parsed_include_name = name_start_tok.value[1:-1]
             is_quoted = True
 
-            self._skip_line_with_warning()
+            self._skip_rest_of_line()
 
         # Case 2: #include <foo.h>
         elif name_start_tok.kind is TokenKind.LE:
@@ -262,6 +261,19 @@ class Preprocessor:
         finally:
             self.local_dir = _orig_local_dir
 
+    def _include_file(self, include_path: str, start_tok: Token, /) -> None:
+        if not (include_path in self._pragma_once_paths or include_path in self._include_guarded_paths):
+            try:
+                # TODO: Cache successfully read include paths to avoid future searches with tons of stat calls.
+                with open(include_path) as fp:
+                    include_source = fp.read()
+            except OSError as exc:
+                if not self.ignore_missing_includes:
+                    msg = f"Cannot open included file: {include_path!r}"
+                    raise PyCCSyntaxError.from_token(msg, start_tok) from exc
+            else:
+                self._prepend(self._tokens_with_temp_local_dir(include_source, include_path))
+
     # endregion ----
 
     # region ---- Directive handlers ----
@@ -272,18 +284,7 @@ class Preprocessor:
         include_name_start_tok = next(filter(_is_not_space, self.raw_tokens))
         include_name, is_quoted = self._read_include_name(include_name_start_tok)
         include_path = self._find_include_path(include_name, is_quoted=is_quoted)
-
-        if (include_path not in self._pragma_once_paths) and (include_path not in self._include_guarded_paths):
-            try:
-                # TODO: Cache successfully read include paths to avoid future searches with tons of stat calls.
-                with open(include_path) as fp:
-                    include_source = fp.read()
-            except OSError as exc:
-                if not self.ignore_missing_includes:
-                    msg = f"Cannot open included file: {include_path!r}"
-                    raise PyCCSyntaxError.from_token(msg, include_name_start_tok) from exc
-            else:
-                self._prepend(self._tokens_with_temp_local_dir(include_source, include_path))
+        self._include_file(include_path, include_name_start_tok)
 
     def pp_include_next(self) -> None:
         """#include_next directive: Find the included file and prepend its preprocessed tokens to our tokens.
@@ -296,18 +297,7 @@ class Preprocessor:
         include_name_start_tok = next(filter(_is_not_space, self.raw_tokens))
         include_name, _ = self._read_include_name(include_name_start_tok)
         include_path = self._find_include_next_path(include_name)
-
-        if (include_path not in self._pragma_once_paths) and (include_path not in self._include_guarded_paths):
-            try:
-                # TODO: Cache successfully read include paths to avoid future searches with tons of stat calls.
-                with open(include_path) as fp:
-                    include_source = fp.read()
-            except OSError as exc:
-                if not self.ignore_missing_includes:
-                    msg = f"Cannot open included file: {include_path!r}"
-                    raise PyCCSyntaxError.from_token(msg, include_name_start_tok) from exc
-            else:
-                self._prepend(self._tokens_with_temp_local_dir(include_source, include_path))
+        self._include_file(include_path, include_name_start_tok)
 
     def pp_define(self) -> None:
         raise NotImplementedError
@@ -349,7 +339,7 @@ class Preprocessor:
         self.curr_tok = next(filter(_is_not_space, self.raw_tokens))
 
         self._pragma_once_paths.add(self.curr_tok.filename)
-        self._skip_line_with_warning()
+        self._skip_rest_of_line()
 
     def pp_pragma(self) -> None:
         """#pragma directive: Ignore and skip to the next line."""
@@ -367,9 +357,9 @@ class Preprocessor:
     def pp_warning(self) -> None:
         """#warning directive: Send a warning."""
 
-        if (peek := self._peek(skip_ws=True)) is not None and (peek.kind is TokenKind.STRING_LITERAL):
+        if (peek := self._peek(skip_spaces=True)) is not None and (peek.kind is TokenKind.STRING_LITERAL):
             warnings.warn_explicit(peek.value, PyCCPreprocessorWarning, peek.filename, peek.lineno)
 
-        self._skip_line_with_warning()
+        self._skip_rest_of_line()
 
     # endregion ----

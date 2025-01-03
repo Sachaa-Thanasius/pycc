@@ -43,7 +43,7 @@ import pytest
 from pycc import _enum as internal_enum
 
 
-@pytest.mark.parametrize("create", [enum.Enum, internal_enum.Enum._create_])
+@pytest.mark.parametrize("create", [enum.Enum, internal_enum.create])
 class TestCreate:
     def test_name(self, create):
         enum_ = create("a", [])

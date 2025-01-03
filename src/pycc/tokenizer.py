@@ -9,7 +9,7 @@ from itertools import islice
 
 from ._typing_compat import Optional, Self
 from .errors import PyCCSyntaxError
-from .token import PUNCTUATION_TOKEN_MAP, CharSets, Token, TokenKind
+from .token import CharSets, Token, TokenKind
 
 
 __all__ = ("Tokenizer",)
@@ -163,7 +163,7 @@ class Tokenizer:
         elif curr_char in CharSets.punctuation1:
             # Some punctuators overlap with different lengths. Verify the exact one.
             self.punctuation()
-            tok_kind = PUNCTUATION_TOKEN_MAP[self.source[self.previous : self.current]]
+            tok_kind = TokenKind.from_punctuator(self.source[self.previous : self.current])
 
         else:
             msg = "Invalid token."
@@ -327,9 +327,11 @@ class Tokenizer:
         else:
             self.current += 1
 
-        if self.source[self.previous : self.current] not in PUNCTUATION_TOKEN_MAP:
+        try:
+            TokenKind.from_punctuator(self.source[self.previous : self.current])
+        except ValueError:
             msg = "Invalid punctuation."
-            raise PyCCSyntaxError(msg, self._get_current_location())
+            raise PyCCSyntaxError(msg, self._get_current_location()) from None
 
     def string_literal(self) -> None:
         """Handle a string literal, which can be utf-8, utf-16, wide, or utf-32."""

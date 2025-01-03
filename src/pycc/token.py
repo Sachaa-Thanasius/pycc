@@ -11,11 +11,14 @@ else:
     from ._enum import Enum, auto
 
 
-__all__ = ("TokenKind", "KEYWORD_TOKEN_MAP", "PUNCTUATION_TOKEN_MAP", "Token")
+__all__ = ("TokenKind", "Token")
 
 
 class TokenKind(Enum):
     """C token kinds."""
+
+    def __repr__(self):
+        return f"<{self.__class__.__name__}.{self.name}>"
 
     # fmt: off
 
@@ -173,8 +176,22 @@ class TokenKind(Enum):
 
     # fmt: on
 
+    @classmethod
+    def from_keyword(cls, name: str) -> TokenKind:
+        try:
+            return _KEYWORD_TOKEN_MAP[name]
+        except KeyError:
+            raise ValueError(name) from None
 
-KEYWORD_TOKEN_MAP = {
+    @classmethod
+    def from_punctuator(cls, punctuator: str) -> TokenKind:
+        try:
+            return _PUNCTUATION_TOKEN_MAP[punctuator]
+        except KeyError:
+            raise ValueError(punctuator) from None
+
+
+_KEYWORD_TOKEN_MAP = {
     # Keywords
     "auto":             TokenKind.AUTO,
     "break":            TokenKind.BREAK,
@@ -227,7 +244,7 @@ KEYWORD_TOKEN_MAP = {
 }  # fmt: skip
 
 
-PUNCTUATION_TOKEN_MAP = {
+_PUNCTUATION_TOKEN_MAP = {
     # Operators
     "+":    TokenKind.PLUS,
     "-":    TokenKind.MINUS,
@@ -366,8 +383,8 @@ class CharSets:
     alphanumeric = ascii_letters | digits
 
     punctuation1 = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"""
-    punctuation2 = tuple(chars for chars in PUNCTUATION_TOKEN_MAP if len(chars) == 2)
-    punctuation3 = tuple(chars for chars in PUNCTUATION_TOKEN_MAP if len(chars) == 3)
+    punctuation2 = tuple(chars for chars in _PUNCTUATION_TOKEN_MAP if len(chars) == 2)
+    punctuation3 = tuple(chars for chars in _PUNCTUATION_TOKEN_MAP if len(chars) == 3)
 
     _identifier_start_ranges = (
         ("\u00b2", "\u00b5"),

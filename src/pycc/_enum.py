@@ -34,7 +34,7 @@
 """A modified version of Brett Cannon's basicenum library, which is an API-compatible re-implementation of ``enum.Enum`
 and related code.
 
-For compatibility with type checkers that special-case the stdlib enum module, use a construct like the following::
+For compatibility with type checkers that special-case the stdlib enum module, hide it like so::
 
     if TYPE_CHECKING:
         from enum import Enum, auto
@@ -70,6 +70,8 @@ EnumNames: TypeAlias = Union[
 
 _AUTO = object()
 
+_RESERVED_ENUM_NAMES = frozenset(("_generate_next_value_",))
+
 
 class EnumMember:
     """Representation of an enum member."""
@@ -91,6 +93,11 @@ class EnumMember:
     @property
     def value(self) -> Any:
         return self._value_
+
+    # Crimes to enable self.__class__ usage in user-defined methods in Enum subclasses.
+    @property
+    def __class__(self):  # pyright: ignore [reportIncompatibleMethodOverride]
+        return self._cls
 
     def __str__(self):
         return f"{self._cls.__name__}.{self._name_}"
@@ -144,7 +151,7 @@ class EnumMeta(type):
     _value2member_map_: dict[Any, EnumMember]
     _member_names_: list[str]
 
-    def __new__(cls, name: str, bases: tuple[type, ...], namespace: dict[str, Any], /, **kwds: Any):
+    def __new__(cls, name: str, bases: tuple[type, ...], namespace: dict[str, Any], /, **kwds: Any):  # noqa: PLR0912
         """Convert class attributes to enum members."""
 
         member_map: dict[str, EnumMember] = {}
@@ -152,42 +159,59 @@ class EnumMeta(type):
         member_names: list[str] = []
         last_auto = 0
 
-        if (custom_auto := namespace.get("_generate_next_value_")) is None:
+        custom_auto = namespace.get("_generate_next_value_")
+        if custom_auto is None:
             for base in bases:
                 if hasattr(base, "_generate_next_value_"):
                     custom_auto = base._generate_next_value_  # pyright: ignore
                     break
 
-        # The rules in `enum` are much stricter for what gets skipped.
-        # Need to do this upfront so enumerate() returns what's expected for _generate_next_value_().
-        members_iter = (
-            (name, value)
-            for name, value in namespace.items()
-            if (not _is_descriptor(value) and not name.startswith("_"))
-        )
-        for index, (mem_name, mem_value) in enumerate(members_iter):
-            if mem_value is _AUTO:
+        member_class = type(f"_{name}EnumMember", (EnumMember,), {})
+
+        member_index = 0
+        for ns_key, ns_value in list(namespace.items()):
+            is_descriptor = _is_descriptor(ns_value)
+
+            # Magic attributes (e.g. __name__, __qualname__) and private attributes.
+            if ns_key.startswith("_") and not is_descriptor:
+                continue
+
+            if isinstance(ns_value, (classmethod, staticmethod)):
+                continue
+
+            # Names special to Enum, e.g. _generate_enum_value_.
+            if ns_key in _RESERVED_ENUM_NAMES:
+                continue
+
+            if is_descriptor:
+                setattr(member_class, ns_key, ns_value)
+                del namespace[ns_key]
+                continue
+
+            if ns_value is _AUTO:
                 if custom_auto is None:
                     last_auto += 1
-                    mem_value = last_auto  # noqa: PLW2901
+                    ns_value = last_auto  # noqa: PLW2901
                 else:
-                    mem_value = custom_auto(  # noqa: PLW2901 # pyright: ignore [reportUnknownVariableType]
-                        mem_name,
+                    ns_value = custom_auto(  # noqa: PLW2901 # pyright: ignore [reportUnknownVariableType]
+                        ns_key,
                         1,  # No way to specify a different starting value.
-                        index,
+                        member_index,
                         [member._value_ for member in member_map.values()],
                     )
-            elif isinstance(mem_value, int):
-                last_auto = mem_value
+            elif isinstance(ns_value, int):
+                last_auto = ns_value
 
             try:
-                member = value_map[mem_value]
+                member = value_map[ns_value]
             except KeyError:
-                value_map[mem_value] = member = EnumMember(mem_name, mem_value)
-                member_names.append(mem_name)
+                value_map[ns_value] = member = member_class(ns_key, ns_value)
+                member_names.append(ns_key)
 
-            member_map[mem_name] = member
-            namespace[mem_name] = member
+            member_map[ns_key] = member
+            namespace[ns_key] = member
+
+            member_index += 1
 
         namespace["_member_map_"] = member_map
         namespace["_value2member_map_"] = value_map
@@ -308,6 +332,21 @@ class EnumMeta(type):
 
 class Enum(metaclass=EnumMeta):
     """An API-compatible re-implementation of ``enum.Enum``."""
+
+
+def create(  # noqa: PLR0913
+    enum_name: str,
+    member_names: EnumNames,
+    /,
+    *,
+    module: str | None = None,
+    qualname: str | None = None,
+    type: type | None = None,  # noqa: A002
+    start: int = 1,
+) -> type[Enum]:
+    """Create an enum using the equivalent functional API for ``enum.Enum``."""
+
+    return Enum._create_(enum_name, member_names, module=module, qualname=qualname, type=type, start=start)
 
 
 def auto() -> object:
