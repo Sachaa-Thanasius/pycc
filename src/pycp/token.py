@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from ._typing_compat import TYPE_CHECKING
 
+TYPE_CHECKING = False
 
 if TYPE_CHECKING:
     from enum import Enum, auto

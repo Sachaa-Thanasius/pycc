@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from itertools import islice
 
-from ._typing_compat import Optional, Self
+from . import _typing_compat as _t
 from .errors import PycpSyntaxError
 from .token import CharSets, Token, TokenKind
 
@@ -78,7 +78,8 @@ class Tokenizer:
 
         "".join(tok.value for tok in Tokenizer(source)) == source
 
-    That means the tokenizer has to understand the following without source modification:
+    That will make it a better foundation for tooling, e.g. code formatters and linter. Consequently, the tokenizer has
+    to understand the following without source modification:
         - [x] All valid newlines.
             - [x] "\\n" (Unix)
             - [x] "\\r\\n" (Windows)
@@ -117,7 +118,7 @@ class Tokenizer:
     def __repr__(self):
         return f"{self.__class__.__name__}(filename={self.filename!r}, current={self.current!r})"
 
-    def __iter__(self) -> Self:
+    def __iter__(self) -> _t.Self:
         return self
 
     def __next__(self) -> Token:
@@ -128,45 +129,33 @@ class Tokenizer:
         # Get the token kind and set the start and end positions of the next token.
         curr_char = self.curr_char
 
-        # NOTE: This, the preprocessor, the parser, etc. are possible to make extensible by dropping the if-elif-else
-        # for a function table, but because this is Python, the potential overhead of that many extra function calls
-        # without guarantee of inlining makes it seem not worth it right now.
         if self.source.startswith("//", self.current):
-            self.line_comment()
-            tok_kind = TokenKind.COMMENT
+            tok_kind = self.line_comment()
 
         elif self.source.startswith("/*", self.current):
-            self.block_comment()
-            tok_kind = TokenKind.COMMENT
+            tok_kind = self.block_comment()
 
         elif curr_char in "\r\n":
-            self.newline()
-            tok_kind = TokenKind.NL
+            tok_kind = self.newline()
 
         elif curr_char in CharSets.non_nl_whitespace:
-            self.whitespace()
-            tok_kind = TokenKind.WS
+            tok_kind = self.whitespace()
 
         elif curr_char.isdecimal() or (curr_char == "." and ((peek := self._peek()) is not None) and peek.isdecimal()):
-            self.numeric_literal()
-            tok_kind = TokenKind.PP_NUM
+            tok_kind = self.numeric_literal()
 
         elif self.source.startswith(('"', 'u8"', 'u"', 'L"', 'W"'), self.current):
-            self.string_literal()
-            tok_kind = TokenKind.STRING_LITERAL
+            tok_kind = self.string_literal()
 
         elif self.source.startswith(("'", "u'", "L'", "U'"), self.current):
-            self.char_const()
-            tok_kind = TokenKind.CHAR_CONST
+            tok_kind = self.char_const()
 
         elif CharSets.can_start_identifier(curr_char):
-            self.identifier()
-            tok_kind = TokenKind.ID
+            tok_kind = self.identifier()
 
         elif curr_char in CharSets.punctuation1:
             # Some punctuators overlap with different lengths. Verify the exact one.
-            self.punctuation()
-            tok_kind = TokenKind.from_punctuator(self.source[self.previous : self.current])
+            tok_kind = self.punctuation()
 
         else:
             msg = "Invalid token."
@@ -189,7 +178,7 @@ class Tokenizer:
 
     # region ---- Internal helpers ----
 
-    def _peek(self) -> Optional[str]:
+    def _peek(self) -> _t.Optional[str]:
         """Return the next character in the source if it exists. Otherwise, return None."""
 
         if (self.current + 1) < self.end:
@@ -254,14 +243,15 @@ class Tokenizer:
 
     # region ---- Token position handlers ----
 
-    def line_comment(self) -> None:
+    def line_comment(self) -> _t.Literal[TokenKind.COMMENT]:
         """Handle a line comment, which starts with "//"."""
 
         self.current += 2
         potential_ends = (self.source.find("\r", self.current), self.source.find("\n", self.current), self.end)
         self.current = min(i for i in potential_ends if i != -1)
+        return TokenKind.COMMENT
 
-    def block_comment(self) -> None:
+    def block_comment(self) -> _t.Literal[TokenKind.COMMENT]:
         """Handle a block comment, which starts with "/*", ends with "*/", and can span multiple lines."""
 
         self.current += 2
@@ -274,7 +264,9 @@ class Tokenizer:
         else:
             self.current = comment_end + 2
 
-    def newline(self) -> None:
+        return TokenKind.COMMENT
+
+    def newline(self) -> _t.Literal[TokenKind.NL]:
         """Handle a newline. A newline can be "\\n", "\\r\\n", or "\\r"."""
 
         # Account for DOS-style line endings.
@@ -284,7 +276,9 @@ class Tokenizer:
         if self.curr_char == "\n":
             self.current += 1
 
-    def whitespace(self) -> None:
+        return TokenKind.NL
+
+    def whitespace(self) -> _t.Literal[TokenKind.WS]:
         """Handle unimportant whitespace."""
 
         self.current += 1
@@ -295,7 +289,9 @@ class Tokenizer:
             self.current,
         )
 
-    def numeric_literal(self) -> None:
+        return TokenKind.WS
+
+    def numeric_literal(self) -> _t.Literal[TokenKind.PP_NUM]:
         """Handle a somewhat relaxed numeric literal. These will be replaced during preprocessing."""
 
         self.current += 1
@@ -308,7 +304,9 @@ class Tokenizer:
             else:
                 break
 
-    def identifier(self) -> None:
+        return TokenKind.PP_NUM
+
+    def identifier(self) -> _t.Literal[TokenKind.ID]:
         """Handle an identifier/keyword."""
 
         self.current += 1
@@ -319,7 +317,9 @@ class Tokenizer:
             self.current,
         )
 
-    def punctuation(self) -> None:
+        return TokenKind.ID
+
+    def punctuation(self) -> TokenKind:
         """Handle a punctuator."""
 
         # We have to increment by the exact length of the identifier, so we check the longest ones first.
@@ -331,12 +331,14 @@ class Tokenizer:
             self.current += 1
 
         try:
-            TokenKind.from_punctuator(self.source[self.previous : self.current])
+            tok_kind = TokenKind.from_punctuator(self.source[self.previous : self.current])
         except ValueError:
             msg = "Invalid punctuation."
             raise PycpSyntaxError(msg, self._get_current_location()) from None
+        else:
+            return tok_kind
 
-    def string_literal(self) -> None:
+    def string_literal(self) -> _t.Literal[TokenKind.STRING_LITERAL]:
         """Handle a string literal, which can be utf-8, utf-16, wide, or utf-32."""
 
         # Move past the prefix so that the quote starter is the current character.
@@ -347,7 +349,9 @@ class Tokenizer:
 
         self._find_quote_end()
 
-    def char_const(self) -> None:
+        return TokenKind.STRING_LITERAL
+
+    def char_const(self) -> _t.Literal[TokenKind.CHAR_CONST]:
         """Handle a character constant, which can be utf-8, utf-16, wide, or utf-32."""
 
         # Move past the prefix so that the quote starter is the current character.
@@ -355,5 +359,7 @@ class Tokenizer:
             self.current += 1
 
         self._find_quote_end()
+
+        return TokenKind.CHAR_CONST
 
     # endregion ----

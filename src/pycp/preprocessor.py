@@ -7,13 +7,13 @@ import warnings
 from collections.abc import Callable, Generator, Iterable, Iterator
 from itertools import chain, takewhile, tee
 
-from ._typing_compat import ClassVar, Optional, Self, TypeAlias
+from . import _typing_compat as _t
 from .errors import PycpPreprocessorWarning, PycpSyntaxError, PycpSyntaxWarning
 from .token import Token, TokenKind
 from .tokenizer import Tokenizer
 
 
-_MatcherFunc: TypeAlias = Callable[["Preprocessor", Token], bool]
+_MatcherFunc: _t.TypeAlias = Callable[["Preprocessor", Token], bool]
 
 __all__ = ("Preprocessor", "Macro")
 
@@ -24,7 +24,7 @@ def _is_not_space(tok: Token, /) -> bool:
     return tok.kind not in {TokenKind.WS, TokenKind.COMMENT}
 
 
-def _is_pp_directive_hash(curr_tok: Token, prev_tok: Optional[Token], /) -> bool:
+def _is_pp_directive_hash(curr_tok: Token, prev_tok: _t.Optional[Token], /) -> bool:
     return (curr_tok.kind is TokenKind.PP_OCTO) and (prev_tok is None or prev_tok.kind is TokenKind.NL)
 
 
@@ -65,7 +65,7 @@ class Preprocessor:
     ignore_missing_includes: bool
     macros: dict[str, Macro]
 
-    _directive_matchers: ClassVar[dict[_MatcherFunc, str]] = {}
+    _directive_matchers: _t.ClassVar[dict[_MatcherFunc, str]] = {}
 
     def __init__(self, tokens: Iterable[Token], local_dir: str = ""):
         self.raw_tokens = iter(tokens)
@@ -75,7 +75,7 @@ class Preprocessor:
         self.macros = {}
 
         #: The last seen token before the current one.
-        self._prev_tok: Optional[Token] = None
+        self._prev_tok: _t.Optional[Token] = None
         #: A set of files that guard inclusion via "#pragma once".
         self._pragma_once_paths: set[str] = set()
         #: A set of files that guard inclusion via the common "#ifndef" pattern.
@@ -83,7 +83,7 @@ class Preprocessor:
         #: The index within include_search_dirs that the "#include_next" directive will start searching from.
         self._include_next_index: int = 0
 
-    def __iter__(self) -> Self:
+    def __iter__(self) -> _t.Self:
         return self
 
     def __next__(self) -> Token:  # noqa: PLR0912
@@ -139,7 +139,7 @@ class Preprocessor:
 
     # region ---- Internal helpers ----
 
-    def _peek(self, *, skip_spaces: bool = True) -> Optional[Token]:
+    def _peek(self, *, skip_spaces: bool = True) -> _t.Optional[Token]:
         """Peek at the next token without consuming it.
 
         Optionally specify whether to find the next non-whitespace token. Newlines are not skipped.

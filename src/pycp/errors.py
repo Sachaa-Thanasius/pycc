@@ -1,6 +1,8 @@
 """Custom exceptions and warnings related to the parser."""
 
-from ._typing_compat import Self
+from __future__ import annotations
+
+from . import _typing_compat as _t
 from .token import Token
 
 
@@ -71,7 +73,7 @@ class PycpSyntaxError(PycpError):
         )
 
     @classmethod
-    def from_token(cls, msg: str, token: Token, /) -> Self:
+    def from_token(cls, msg: str, token: Token, /) -> _t.Self:
         with open(token.filename) as fp:
             line_text = next(line for i, line in enumerate(fp, start=1) if i == token.lineno)
         return cls(msg, (token.filename, line_text, token.lineno, token.col_offset, token.end_col_offset))

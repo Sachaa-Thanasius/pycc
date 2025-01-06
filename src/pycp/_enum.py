@@ -40,15 +40,16 @@ For compatibility with type checkers that special-case the stdlib enum module, h
         from enum import Enum, auto
     else:
         from ._enum import Enum, auto
-
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, MutableMapping
 
-from ._typing_compat import TYPE_CHECKING, Any, TypeAlias, Union, cast
+from . import _typing_compat as _t
 
+
+TYPE_CHECKING = False
 
 if TYPE_CHECKING:
     from types import MappingProxyType
@@ -60,12 +61,12 @@ __all__ = ("EnumMeta", "Enum", "auto", "unique")
 
 
 # Copied from enum in typeshed.
-_EnumNames: TypeAlias = Union[
+_EnumNames: _t.TypeAlias = """_t.Union[
     str,
     Iterable[str],
-    Iterable[Iterable[Union[str, Any]]],
-    Mapping[str, Any],
-]
+    Iterable[Iterable[_t.Union[str, _t.Any]]],
+    Mapping[str, _t.Any],
+]"""
 
 
 _AUTO = object()
@@ -82,7 +83,7 @@ class _EnumMember:
 
     _cls: type[Enum]
 
-    def __init__(self, name: str, value: Any) -> None:
+    def __init__(self, name: str, value: _t.Any) -> None:
         self._name_ = name
         self._value_ = value
 
@@ -91,7 +92,7 @@ class _EnumMember:
         return self._name_
 
     @property
-    def value(self) -> Any:
+    def value(self) -> _t.Any:
         return self._value_
 
     # Crimes to enable self.__class__ usage in user-defined methods in Enum subclasses.
@@ -128,7 +129,7 @@ def _is_descriptor(obj: object) -> bool:
 
 
 def _set_names(
-    ns: MutableMapping[str, Any],
+    ns: MutableMapping[str, _t.Any],
     qualname: str | None,
     module: str | None,
     name: str,
@@ -148,14 +149,14 @@ class EnumMeta(type):
     """An API-compatible re-implementation of ``enum.EnumMeta``."""
 
     _member_map_: dict[str, _EnumMember]
-    _value2member_map_: dict[Any, _EnumMember]
+    _value2member_map_: dict[_t.Any, _EnumMember]
     _member_names_: list[str]
 
-    def __new__(cls, name: str, bases: tuple[type, ...], namespace: dict[str, Any], /, **kwds: Any):  # noqa: PLR0912
+    def __new__(cls, name: str, bases: tuple[type, ...], namespace: dict[str, _t.Any], /, **kwds: _t.Any):  # noqa: PLR0912
         """Convert class attributes to enum members."""
 
         member_map: dict[str, _EnumMember] = {}
-        value_map: dict[Any, _EnumMember] = {}
+        value_map: dict[_t.Any, _EnumMember] = {}
         member_names: list[str] = []
         last_auto = 0
 
@@ -176,7 +177,7 @@ class EnumMeta(type):
             if ns_key.startswith("_") and not is_descriptor:
                 continue
 
-            # Methods that should belong to the parent enum class.
+            # Wrapped functions that should belong to the parent enum class.
             if isinstance(ns_value, (classmethod, staticmethod)):
                 continue
 
@@ -184,6 +185,7 @@ class EnumMeta(type):
             if ns_key in _RESERVED_ENUM_NAMES:
                 continue
 
+            # Functions, properties, other descriptors.
             if is_descriptor:
                 setattr(member_class, ns_key, ns_value)
                 del namespace[ns_key]
@@ -220,7 +222,7 @@ class EnumMeta(type):
 
         return super().__new__(cls, name, bases, namespace, **kwds)
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
+    def __init__(self, *args: _t.Any, **kwargs: _t.Any) -> None:
         """Make sure enum members have a reference to the parent class."""
 
         super().__init__(*args, **kwargs)
@@ -229,7 +231,7 @@ class EnumMeta(type):
             mem_value._cls = self
 
     @property
-    def __members__(self) -> MappingProxyType[str, Any]:
+    def __members__(self) -> MappingProxyType[str, _t.Any]:
         # Cache proxy to avoid rewrapping on every call.
         try:
             return self._proxied_member_map
@@ -240,7 +242,7 @@ class EnumMeta(type):
     def __repr__(self) -> str:
         return f"<enum {self.__name__!r}>"
 
-    def __call__(self, value: Any, /) -> _EnumMember:
+    def __call__(self, value: _t.Any, /) -> _EnumMember:
         """Search members by value."""
 
         try:
@@ -272,7 +274,7 @@ class EnumMeta(type):
     def __len__(self) -> int:
         return len(self._member_names_)
 
-    def __setattr__(self, name: str, value: Any, /) -> None:
+    def __setattr__(self, name: str, value: _t.Any, /) -> None:
         if name in self._member_map_:
             msg = f"Cannot reassign member {name!r}."
             raise AttributeError(msg)
@@ -304,7 +306,7 @@ class EnumMeta(type):
     ):
         """Create an enum using the equivalent functional API for ``enum.Enum``."""
 
-        ns: dict[str, Any]
+        ns: dict[str, _t.Any]
 
         if isinstance(member_names, str):
             ns = {name: index for index, name in enumerate(member_names.replace(",", " ").split(), start=start)}
@@ -313,10 +315,10 @@ class EnumMeta(type):
             names_seq = list(member_names)
             if names_seq:
                 if isinstance(names_seq[0], str):
-                    names_seq = cast("list[str]", names_seq)
+                    names_seq = _t.cast("list[str]", names_seq)
                     ns = {name: index for index, name in enumerate(names_seq, start=start)}
                 else:
-                    names_seq = cast("list[tuple[str, Any]]", names_seq)
+                    names_seq = _t.cast("list[tuple[str, _t.Any]]", names_seq)
                     ns = dict(names_seq)
             else:
                 ns = {}
@@ -365,7 +367,7 @@ def unique(cls: type[Enum]) -> type[Enum]:
         If any duplicate values are found.
     """
 
-    seen: list[Any] = []
+    seen: list[_t.Any] = []
     for member in cls._member_map_.values():
         value = member.value
         if value in seen:

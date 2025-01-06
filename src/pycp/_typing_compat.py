@@ -1,6 +1,10 @@
-"""Compatibility shim for typing- and annotation-related symbols, to avoid importing from typing."""
+"""Compatibility shim for typing- and annotation-related symbols, to avoid accidentally importing from typing or
+having a dependency on typing-extensions.
+"""
 
 from __future__ import annotations
+
+import sys
 
 
 TYPE_CHECKING = False
@@ -11,7 +15,16 @@ else:
     GenericAlias = type(list[int])
 
 
-__all__ = ("TYPE_CHECKING", "Any", "ClassVar", "Optional", "Self", "TypeAlias", "Union", "cast")
+__all__ = (
+    "Any",
+    "ClassVar",
+    "Literal",
+    "Optional",
+    "Self",
+    "TypeAlias",
+    "Union",
+    "cast",
+)
 
 
 class _PlaceholderGenericAlias(GenericAlias):
@@ -36,28 +49,52 @@ class _PlaceholderGenericMeta(_PlaceholderMeta):
 
 
 if TYPE_CHECKING:
-    from typing import Any, ClassVar, Optional, Union, cast
-
-    from typing_extensions import Self, TypeAlias
+    from typing import cast
 else:
 
     def cast(typ: object, val: object) -> object:
         return val
 
-    class Any(metaclass=_PlaceholderMeta):
+
+if TYPE_CHECKING:
+    from typing_extensions import TypeAlias
+elif sys.version_info < (3, 10):
+
+    class TypeAlias(metaclass=_PlaceholderMeta):
         _source_module = "typing"
 
-    class ClassVar(metaclass=_PlaceholderGenericMeta):
-        _source_module = "typing"
 
-    class Optional(metaclass=_PlaceholderGenericMeta):
-        _source_module = "typing"
-
-    class Union(metaclass=_PlaceholderGenericMeta):
-        _source_module = "typing"
+if TYPE_CHECKING:
+    from typing_extensions import Self
+elif sys.version_info < (3, 11):
 
     class Self(metaclass=_PlaceholderMeta):
         _source_module = "typing"
 
-    class TypeAlias(metaclass=_PlaceholderMeta):
-        _source_module = "typing"
+
+def __getattr__(name: str, /) -> object:
+    global Any, ClassVar, Literal, Optional, Union  # noqa: PLW0603
+
+    if name in {"Any", "ClassVar", "Literal", "Optional", "Union"}:
+        from typing import Any, ClassVar, Literal, Optional, Union
+
+        return globals()[name]
+
+    if name == "TypeAlias" and sys.version_info >= (3, 10):
+        from typing import TypeAlias
+
+        globals()[name] = TypeAlias
+        return globals()[name]
+
+    if name == "Self" and sys.version_info >= (3, 11):
+        from typing import TypeAlias
+
+        globals()[name] = TypeAlias
+        return globals()[name]
+
+    msg = f"module {__name__!r} has no attribute {name!r}"
+    raise AttributeError(msg)
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()).union(__all__))
