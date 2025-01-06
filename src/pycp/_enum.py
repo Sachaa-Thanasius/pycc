@@ -60,7 +60,7 @@ __all__ = ("EnumMeta", "Enum", "auto", "unique")
 
 
 # Copied from enum in typeshed.
-EnumNames: TypeAlias = Union[
+_EnumNames: TypeAlias = Union[
     str,
     Iterable[str],
     Iterable[Iterable[Union[str, Any]]],
@@ -73,7 +73,7 @@ _AUTO = object()
 _RESERVED_ENUM_NAMES = frozenset(("_generate_next_value_",))
 
 
-class EnumMember:
+class _EnumMember:
     """Representation of an enum member."""
 
     # The class overall tries to preserve object identity for fast object comparison.
@@ -147,15 +147,15 @@ def _set_names(
 class EnumMeta(type):
     """An API-compatible re-implementation of ``enum.EnumMeta``."""
 
-    _member_map_: dict[str, EnumMember]
-    _value2member_map_: dict[Any, EnumMember]
+    _member_map_: dict[str, _EnumMember]
+    _value2member_map_: dict[Any, _EnumMember]
     _member_names_: list[str]
 
     def __new__(cls, name: str, bases: tuple[type, ...], namespace: dict[str, Any], /, **kwds: Any):  # noqa: PLR0912
         """Convert class attributes to enum members."""
 
-        member_map: dict[str, EnumMember] = {}
-        value_map: dict[Any, EnumMember] = {}
+        member_map: dict[str, _EnumMember] = {}
+        value_map: dict[Any, _EnumMember] = {}
         member_names: list[str] = []
         last_auto = 0
 
@@ -166,7 +166,7 @@ class EnumMeta(type):
                     custom_auto = base._generate_next_value_  # pyright: ignore
                     break
 
-        member_class = type(f"_{name}EnumMember", (EnumMember,), {})
+        member_class = type(f"_{name}EnumMember", (_EnumMember,), {})
 
         member_index = 0
         for ns_key, ns_value in list(namespace.items()):
@@ -176,6 +176,7 @@ class EnumMeta(type):
             if ns_key.startswith("_") and not is_descriptor:
                 continue
 
+            # Methods that should belong to the parent enum class.
             if isinstance(ns_value, (classmethod, staticmethod)):
                 continue
 
@@ -239,7 +240,7 @@ class EnumMeta(type):
     def __repr__(self) -> str:
         return f"<enum {self.__name__!r}>"
 
-    def __call__(self, value: Any, /) -> EnumMember:
+    def __call__(self, value: Any, /) -> _EnumMember:
         """Search members by value."""
 
         try:
@@ -248,7 +249,7 @@ class EnumMeta(type):
             msg = f"{value!r} is not a valid {self.__qualname__}"
             raise ValueError(msg) from None
 
-    def __getitem__(self, name: str, /) -> EnumMember:
+    def __getitem__(self, name: str, /) -> _EnumMember:
         """Search by member name."""
 
         return self._member_map_[name]
@@ -293,7 +294,7 @@ class EnumMeta(type):
     def _create_(  # noqa: ANN202, PLR0913 # pyright doesn't allow Self in metaclasses.
         self,
         enum_name: str,
-        member_names: EnumNames,
+        member_names: _EnumNames,
         /,
         *,
         module: str | None = None,
@@ -336,7 +337,7 @@ class Enum(metaclass=EnumMeta):
 
 def create(  # noqa: PLR0913
     enum_name: str,
-    member_names: EnumNames,
+    member_names: _EnumNames,
     /,
     *,
     module: str | None = None,

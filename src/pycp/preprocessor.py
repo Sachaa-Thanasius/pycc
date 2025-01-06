@@ -8,7 +8,7 @@ from collections.abc import Callable, Generator, Iterable, Iterator
 from itertools import chain, takewhile, tee
 
 from ._typing_compat import ClassVar, Optional, Self, TypeAlias
-from .errors import PyCCPreprocessorWarning, PyCCSyntaxError, PyCCSyntaxWarning
+from .errors import PycpPreprocessorWarning, PycpSyntaxError, PycpSyntaxWarning
 from .token import Token, TokenKind
 from .tokenizer import Tokenizer
 
@@ -99,7 +99,7 @@ class Preprocessor:
 
                 if pp_start_tok is None:
                     msg = "Missing preprocessor directive."
-                    raise PyCCSyntaxError.from_token(msg, self.curr_tok)
+                    raise PycpSyntaxError.from_token(msg, self.curr_tok)
 
                 pp_start_value = pp_start_tok.value
 
@@ -123,7 +123,7 @@ class Preprocessor:
                     self.pp_warning()
                 else:
                     msg = "Invalid preprocessor directive."
-                    raise PyCCSyntaxError.from_token(msg, pp_start_tok)
+                    raise PycpSyntaxError.from_token(msg, pp_start_tok)
 
                 self._prev_tok = self.curr_tok
 
@@ -164,7 +164,7 @@ class Preprocessor:
         if (next_tok is None) or (next_tok.kind is TokenKind.NL):
             return
 
-        warnings.warn_explicit("Extra tokens.", PyCCSyntaxWarning, next_tok.filename, next_tok.lineno)
+        warnings.warn_explicit("Extra tokens.", PycpSyntaxWarning, next_tok.filename, next_tok.lineno)
 
         next_line_start = next((t for t in self.raw_tokens if t.kind is TokenKind.NL), None)
         if next_line_start is not None:
@@ -187,14 +187,14 @@ class Preprocessor:
             self._skip_rest_of_line()
 
         # Case 2: #include <foo.h>
-        elif name_start_tok.kind is TokenKind.LE:
+        elif name_start_tok.kind is TokenKind.LT:
             # Find the closing ">" before a newline.
             _include_path_toks = list(takewhile(lambda t: t.kind is not TokenKind.NL, self.raw_tokens))
 
             # We could consume all the remaining tokens without finding ">", possibly without even hitting a newline.
-            if not _include_path_toks or (_include_path_toks[-1].kind is not TokenKind.GE):
+            if not _include_path_toks or (_include_path_toks[-1].kind is not TokenKind.GT):
                 msg = "Expected closing '>' for #include."
-                raise PyCCSyntaxError.from_token(msg, name_start_tok)
+                raise PycpSyntaxError.from_token(msg, name_start_tok)
 
             # Remove the ">".
             del _include_path_toks[-1]
@@ -210,7 +210,7 @@ class Preprocessor:
 
         else:
             msg = "Expected filename after #include."
-            raise PyCCSyntaxError.from_token(msg, name_start_tok)
+            raise PycpSyntaxError.from_token(msg, name_start_tok)
 
         return parsed_include_name, is_quoted
 
@@ -270,7 +270,7 @@ class Preprocessor:
             except OSError as exc:
                 if not self.ignore_missing_includes:
                     msg = f"Cannot open included file: {include_path!r}"
-                    raise PyCCSyntaxError.from_token(msg, start_tok) from exc
+                    raise PycpSyntaxError.from_token(msg, start_tok) from exc
             else:
                 self._prepend(self._tokens_with_temp_local_dir(include_source, include_path))
 
@@ -352,13 +352,13 @@ class Preprocessor:
         """#error directive: Raise an error."""
 
         msg = "Preprocessing error."
-        raise PyCCSyntaxError.from_token(msg, next(self.raw_tokens))
+        raise PycpSyntaxError.from_token(msg, next(self.raw_tokens))
 
     def pp_warning(self) -> None:
         """#warning directive: Send a warning."""
 
         if (peek := self._peek(skip_spaces=True)) is not None and (peek.kind is TokenKind.STRING_LITERAL):
-            warnings.warn_explicit(peek.value, PyCCPreprocessorWarning, peek.filename, peek.lineno)
+            warnings.warn_explicit(peek.value, PycpPreprocessorWarning, peek.filename, peek.lineno)
 
         self._skip_rest_of_line()
 

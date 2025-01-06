@@ -40,7 +40,7 @@ import pickle
 
 import pytest
 
-from pycc import _enum as internal_enum
+from pycp import _enum as internal_enum
 
 
 @pytest.mark.parametrize("create", [enum.Enum, internal_enum.create])

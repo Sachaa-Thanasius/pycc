@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "pycc"
+name = "pycp"
 version = "0.0.0"
 description = "An attempt at a C parser in Python."
 requires-python = ">=3.9"
@@ -19,11 +19,11 @@ pythonpath = "src"
 addopts = ["--import-mode=importlib", "--strict-markers", "--strict-config"]
 
 [tool.coverage.paths]
-pycc = ["src"]
+pycp = ["src"]
 
 [tool.coverage.run]
 plugins = ["covdefaults"]
-source = ["pycc", "tests"]
+source = ["pycp", "tests"]
 
 [tool.coverage.report]
 fail_under = 90
@@ -110,7 +110,7 @@ unfixable = [
     "ERA", # Prevent unlikely erroneous deletion.
 ]
 
-typing-modules = ["pycc._typing_compat"]
+typing-modules = ["pycp._typing_compat"]
 
 [tool.ruff.lint.isort]
 lines-after-imports = 2
@@ -132,7 +132,7 @@ keep-runtime-typing = true
 # -------- Type-checker config
 
 [tool.pyright]
-include = ["src/pycc", "tests"]
+include = ["src/pycp", "tests"]
 pythonVersion = "3.9"
 pythonPlatform = "All"
 typeCheckingMode = "strict"

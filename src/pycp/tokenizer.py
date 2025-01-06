@@ -8,7 +8,7 @@ from __future__ import annotations
 from itertools import islice
 
 from ._typing_compat import Optional, Self
-from .errors import PyCCSyntaxError
+from .errors import PycpSyntaxError
 from .token import CharSets, Token, TokenKind
 
 
@@ -128,6 +128,9 @@ class Tokenizer:
         # Get the token kind and set the start and end positions of the next token.
         curr_char = self.curr_char
 
+        # NOTE: This, the preprocessor, the parser, etc. are possible to make extensible by dropping the if-elif-else
+        # for a function table, but because this is Python, the potential overhead of that many extra function calls
+        # without guarantee of inlining makes it seem not worth it right now.
         if self.source.startswith("//", self.current):
             self.line_comment()
             tok_kind = TokenKind.COMMENT
@@ -167,7 +170,7 @@ class Tokenizer:
 
         else:
             msg = "Invalid token."
-            raise PyCCSyntaxError(msg, self._get_current_location())
+            raise PycpSyntaxError(msg, self._get_current_location())
 
         # Construct the token.
         tok_value = self.source[self.previous : self.current]
@@ -212,7 +215,7 @@ class Tokenizer:
             A tuple with the filename, line text, line number, column offset, and end column offset.
         """
 
-        # TODO: Confirm that this is correct; I don't think it finds the relevant *unescaped* newline.
+        # TODO: This probably won't work if/when line continuations are kept around.
         line_text = self.source.splitlines()[self.lineno - 1]
 
         col_offset, end_col_offset = self._get_current_offset()
@@ -237,7 +240,7 @@ class Tokenizer:
                 quote_end += 1
         except ValueError:  # Raised by index when not found.
             msg = f"Unclosed {quote_type}."
-            raise PyCCSyntaxError(msg, self._get_current_location()) from None
+            raise PycpSyntaxError(msg, self._get_current_location()) from None
 
         # Ensure the quote is entirely on one logical line, i.e. that it doesn't contain any unescaped newlines.
         if any(
@@ -245,7 +248,7 @@ class Tokenizer:
             for i, char in enumerate(islice(self.source, quote_start, self.current), start=quote_start)
         ):
             msg = f"Unclosed {quote_type}."
-            raise PyCCSyntaxError(msg, self._get_current_location())
+            raise PycpSyntaxError(msg, self._get_current_location())
 
     # endregion ----
 
@@ -267,7 +270,7 @@ class Tokenizer:
             comment_end = self.source.index("*/", self.current)
         except ValueError as exc:
             msg = "Unclosed block comment."
-            raise PyCCSyntaxError(msg, self._get_current_location()) from exc
+            raise PycpSyntaxError(msg, self._get_current_location()) from exc
         else:
             self.current = comment_end + 2
 
@@ -331,7 +334,7 @@ class Tokenizer:
             TokenKind.from_punctuator(self.source[self.previous : self.current])
         except ValueError:
             msg = "Invalid punctuation."
-            raise PyCCSyntaxError(msg, self._get_current_location()) from None
+            raise PycpSyntaxError(msg, self._get_current_location()) from None
 
     def string_literal(self) -> None:
         """Handle a string literal, which can be utf-8, utf-16, wide, or utf-32."""
