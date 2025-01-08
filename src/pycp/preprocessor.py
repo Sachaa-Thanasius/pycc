@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import warnings
-from collections.abc import Callable, Generator, Iterable, Iterator
+from collections.abc import Generator, Iterable, Iterator
 from itertools import chain, takewhile, tee
 
 from . import _typing_compat as _t
@@ -13,15 +13,16 @@ from .token import Token, TokenKind
 from .tokenizer import Tokenizer
 
 
-_MatcherFunc: _t.TypeAlias = Callable[["Preprocessor", Token], bool]
-
 __all__ = ("Preprocessor", "Macro")
 
 
-def _is_not_space(tok: Token, /) -> bool:
-    """Determine if the given token is non-newline whitespace."""
+_SPACE_TOKENS = {TokenKind.WS, TokenKind.COMMENT, TokenKind.ESCAPED_NL}
 
-    return tok.kind not in {TokenKind.WS, TokenKind.COMMENT}
+
+def _is_not_space(tok: Token, /) -> bool:
+    """Check that the given token is not non-newline whitespace."""
+
+    return tok.kind not in _SPACE_TOKENS
 
 
 def _is_pp_directive_hash(curr_tok: Token, prev_tok: _t.Optional[Token], /) -> bool:
@@ -29,11 +30,61 @@ def _is_pp_directive_hash(curr_tok: Token, prev_tok: _t.Optional[Token], /) -> b
 
 
 class Macro:
-    pass
+    """A preprocessor macro.
+
+    Parameters
+    ----------
+    name: str
+        The name.
+    body: list[Token]
+        The body as tokens.
+    arglist: _t.Optional[list[str]], optional
+        The list of argument names. Defaults to None.
+    variadic: bool, default=False
+        Whether the macro is variadic. Defaults to False.
+
+    Attributes
+    ----------
+    name: str
+        The name.
+    body: list[Token]
+        The body as tokens.
+    arglist: list[str]
+        The list of argument names.
+    variadic: bool
+        Whether the macro is variadic.
+    vararg: str
+        If the macro is variadic, the name of the variadic parameter. Otherwise, the empty string.
+    """
+
+    __slots__ = ("name", "body", "arglist", "variadic", "vararg")
+
+    name: str
+    body: list[Token]
+    arglist: list[str]
+    variadic: bool
+    vararg: str
+
+    def __init__(self, name: str, body: list[Token], arglist: _t.Optional[list[str]] = None, variadic: bool = False):
+        self.name = name
+        self.body = body
+        self.arglist = arglist if (arglist is not None) else []
+        self.variadic = variadic
+        self.vararg = self.arglist[-1] if variadic else ""
+
+    def __repr__(self):
+        components = [
+            f"{self.__class__.__name__}(",
+            f"{self.name!r}, {self.body!r}, arglist={self.arglist!r}, variadic={self.variadic!r}",
+        ]
+        if self.variadic:
+            components.append(f", vararg={self.vararg}")
+        components.append(")")
+        return "".join(components)
 
 
 class Preprocessor:
-    """A preprocessor for the C language, loosely based on the C11 standard.
+    """A preprocessor for the C language based on the C11 standard.
 
     Iterate over it to get a stream of preprocessed tokens.
 
@@ -65,8 +116,6 @@ class Preprocessor:
     ignore_missing_includes: bool
     macros: dict[str, Macro]
 
-    _directive_matchers: _t.ClassVar[dict[_MatcherFunc, str]] = {}
-
     def __init__(self, tokens: Iterable[Token], local_dir: str = ""):
         self.raw_tokens = iter(tokens)
         self.local_dir = local_dir
@@ -87,14 +136,19 @@ class Preprocessor:
         return self
 
     def __next__(self) -> Token:  # noqa: PLR0912
-        # Loop until a token is found that isn't a macro, a preprocessor directive, or whitespace. Return that.
+        """Expand macros, evaluate preprocessor directives, and skip whitespace until a token is found that doesn't
+        qualify for those operations. Return that.
+        """
+
         for self.curr_tok in self.raw_tokens:  # noqa: B020 # False positive.
             if self._is_macro(self.curr_tok):
                 self._expand_macro()
 
             elif _is_pp_directive_hash(self.curr_tok, self._prev_tok):
-                # Invariant: Only the first token of a directive name is fully consumed here. Handlers can internally
-                # forward as much as they wish, e.g. pragma once.
+                # Invariant: Only the first token of a directive name should be consumed here.
+                # Handlers can internally forward as much as they wish.
+                # See "pragma once" for an example.
+
                 pp_start_tok = next(filter(_is_not_space, self.raw_tokens), None)
 
                 if pp_start_tok is None:
@@ -105,29 +159,32 @@ class Preprocessor:
 
                 if pp_start_tok.kind is TokenKind.NL:
                     pass  # Null directive.
+
                 elif pp_start_value == "include":
                     self.pp_include()
+
                 elif pp_start_value == "include_next":
                     self.pp_include_next()
-                elif (
-                    pp_start_value == "pragma"
-                    and (peek := self._peek(skip_spaces=True)) is not None
-                    and peek.value == "once"
-                ):
+
+                elif pp_start_value == "pragma" and ((peek := self._peek()) is not None) and peek.value == "once":
                     self.pp_pragma_once()
+
                 elif pp_start_value == "pragma":
                     self.pp_pragma()
+
                 elif pp_start_value == "error":
                     self.pp_error()
+
                 elif pp_start_value == "warning":
                     self.pp_warning()
+
                 else:
                     msg = "Invalid preprocessor directive."
                     raise PycpSyntaxError.from_token(msg, pp_start_tok)
 
                 self._prev_tok = self.curr_tok
 
-            elif self.curr_tok.kind in {TokenKind.NL, TokenKind.WS, TokenKind.COMMENT}:
+            elif self.curr_tok.kind in _SPACE_TOKENS:
                 self._prev_tok = self.curr_tok
 
             else:
@@ -142,7 +199,10 @@ class Preprocessor:
     def _peek(self, *, skip_spaces: bool = True) -> _t.Optional[Token]:
         """Peek at the next token without consuming it.
 
-        Optionally specify whether to find the next non-whitespace token. Newlines are not skipped.
+        Parameters
+        ----------
+        skip_spaces: bool, default=True
+            Whether to find the next non-whitespace token. Newlines are not skipped regardless. True by default.
         """
 
         self.raw_tokens, forked_tokens = tee(self.raw_tokens)
@@ -151,7 +211,9 @@ class Preprocessor:
         else:
             return next(forked_tokens, None)
 
-    def _prepend(self, other_tokens: Iterable[Token], /) -> None:
+    def _prepend(self, other_tokens: Iterable[Token]) -> None:
+        """Prepend an iterable of raw tokens to the internal token stream."""
+
         self.raw_tokens = chain(other_tokens, self.raw_tokens)
 
     def _skip_rest_of_line(self) -> None:
@@ -166,11 +228,12 @@ class Preprocessor:
 
         warnings.warn_explicit("Extra tokens.", PycpSyntaxWarning, next_tok.filename, next_tok.lineno)
 
+        # Preserve the newline for the pp hash check in __next__.
         next_line_start = next((t for t in self.raw_tokens if t.kind is TokenKind.NL), None)
         if next_line_start is not None:
             self._prepend([next_line_start])
 
-    def _is_macro(self, tok: Token, /) -> bool:
+    def _is_macro(self, tok: Token) -> bool:
         """Determine if a token corresponds to a defined macro."""
 
         return (tok.kind is TokenKind.ID) and (tok.value in self.macros)
@@ -178,7 +241,7 @@ class Preprocessor:
     def _expand_macro(self) -> None:
         raise NotImplementedError
 
-    def _read_include_name(self, name_start_tok: Token, /) -> tuple[str, bool]:
+    def _read_include_name(self, name_start_tok: Token) -> tuple[str, bool]:
         # Case 1: #include "foo.h"
         if name_start_tok.kind is TokenKind.STRING_LITERAL:
             parsed_include_name = name_start_tok.value[1:-1]
@@ -205,6 +268,7 @@ class Preprocessor:
         # Case 3: #include FOO
         elif self._is_macro(name_start_tok):
             # TODO: Perform macro expansion, i.e. run through preprocessor and prepend to self.tokens. Then recurse?
+            # One way to recurse would be iterating over self instead of self.raw_tokens.
             self._expand_macro()
             raise NotImplementedError
 
@@ -214,8 +278,8 @@ class Preprocessor:
 
         return parsed_include_name, is_quoted
 
-    def _find_include_path(self, include_name: str, /, *, is_quoted: bool = False) -> str:
-        """Find an include path based on its name within the known include directories.
+    def _find_include_path(self, include_name: str, *, is_quoted: bool = False) -> str:
+        """Find an include path based on its name within pre-established include directories.
 
         Parameters
         ----------
@@ -243,7 +307,7 @@ class Preprocessor:
 
         return include_name
 
-    def _find_include_next_path(self, include_name: str, /) -> str:
+    def _find_include_next_path(self, include_name: str) -> str:
         for include_dir in self.include_search_dirs[self._include_next_index :]:
             candidate = os.path.normpath(os.path.join(include_dir, include_name))
             if os.path.exists(candidate):
@@ -251,7 +315,7 @@ class Preprocessor:
 
         return include_name
 
-    def _tokens_with_temp_local_dir(self, include_path: str, include_source: str, /) -> Generator[Token]:
+    def _tokens_with_temp_local_dir(self, include_path: str, include_source: str) -> Generator[Token]:
         # TODO: There's no hook to replace the Tokenizer class with another one. Can one be provided? Should one?
 
         _orig_local_dir = self.local_dir
@@ -261,7 +325,7 @@ class Preprocessor:
         finally:
             self.local_dir = _orig_local_dir
 
-    def _include_file(self, include_path: str, start_tok: Token, /) -> None:
+    def _include_file(self, include_path: str, start_tok: Token) -> None:
         if not (include_path in self._pragma_once_paths or include_path in self._include_guarded_paths):
             try:
                 # TODO: Cache successfully read include paths to avoid future searches with tons of stat calls.
@@ -279,7 +343,7 @@ class Preprocessor:
     # region ---- Directive handlers ----
 
     def pp_include(self) -> None:
-        """#include directive: Find the included file and prepend its preprocessed tokens to our tokens."""
+        """#include directive: Include the file, preprocess it, then prepend its tokens to our tokens."""
 
         include_name_start_tok = next(filter(_is_not_space, self.raw_tokens))
         include_name, is_quoted = self._read_include_name(include_name_start_tok)
@@ -287,7 +351,7 @@ class Preprocessor:
         self._include_file(include_path, include_name_start_tok)
 
     def pp_include_next(self) -> None:
-        """#include_next directive: Find the included file and prepend its preprocessed tokens to our tokens.
+        """#include_next directive: Include the file, preprocess it, then prepend its tokens to our tokens.
 
         Notes
         -----
@@ -332,19 +396,18 @@ class Preprocessor:
 
         Notes
         -----
-        This is a common but *non-standard* directive that is used as an alternative to standard #ifndef include guards.
+        This is a *non-standard* directive. It is a common alternative to standard #ifndef include guards.
         """
 
         # Forward to "once" since its presence is confirmed.
         self.curr_tok = next(filter(_is_not_space, self.raw_tokens))
-
         self._pragma_once_paths.add(self.curr_tok.filename)
         self._skip_rest_of_line()
 
     def pp_pragma(self) -> None:
         """#pragma directive: Ignore and skip to the next line."""
 
-        # FIXME: Actually capture pragmas.
+        # TODO: Actually capture pragmas and put them in the AST somehow, but where?
 
         self.curr_tok = next(t for t in self.raw_tokens if t.kind is TokenKind.NL)
 
@@ -357,7 +420,7 @@ class Preprocessor:
     def pp_warning(self) -> None:
         """#warning directive: Send a warning."""
 
-        if (peek := self._peek(skip_spaces=True)) is not None and (peek.kind is TokenKind.STRING_LITERAL):
+        if (peek := self._peek()) is not None and (peek.kind is TokenKind.STRING_LITERAL):
             warnings.warn_explicit(peek.value, PycpPreprocessorWarning, peek.filename, peek.lineno)
 
         self._skip_rest_of_line()

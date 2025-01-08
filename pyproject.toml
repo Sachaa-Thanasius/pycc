@@ -137,11 +137,11 @@ pythonVersion = "3.9"
 pythonPlatform = "All"
 typeCheckingMode = "strict"
 
-reportPrivateUsage = "none"
-reportUnnecessaryIsInstance = "information"
+reportPrivateUsage = "none"                    # We're the library.
+reportUnnecessaryIsInstance = "information"    # Verify user input.
 reportCallInDefaultInitializer = "warning"
-reportImportCycles = "information"
+reportImplicitStringConcatenation = "warning"
+reportImportCycles = "information"             # Occasionally not a false positive.
 reportPropertyTypeMismatch = "error"
 reportShadowedImports = "error"
 reportUnnecessaryTypeIgnoreComment = "warning"
-reportImplicitStringConcatenation = "warning"

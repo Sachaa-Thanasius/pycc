@@ -15,38 +15,8 @@ from .token import CharSets, Token, TokenKind
 __all__ = ("Tokenizer",)
 
 
-def _replace_line_continuations(source: str, /) -> str:
-    """Remove line continuations while keeping logical and physical line numbers synced via extra newlines."""
-
-    line_cont_count = 0
-    fixed_lines: list[str] = []
-
-    for line in source.splitlines(keepends=True):
-        if line.endswith(("\\\n", "\\\r\n", "\\\r")):
-            # Discard the line continuation characters.
-            fixed_lines.append(line.rstrip("\r\n").removesuffix("\\"))
-            line_cont_count += 1
-
-        elif line_cont_count:
-            # Splice together consecutive lines that were originally joined by line continuations.
-            fixed_lines[-line_cont_count:] = ["".join((*fixed_lines[-line_cont_count:], line))]
-
-            # Pad with newlines to match the number of line continuations so far.
-            fixed_lines.append("\n" * line_cont_count)
-            line_cont_count = 0
-
-        else:
-            fixed_lines.append(line)
-
-    if line_cont_count:
-        fixed_lines.append("\n" * line_cont_count)
-        line_cont_count = 0
-
-    return "".join(fixed_lines)
-
-
 class Tokenizer:
-    """A tokenizer for the C language, based loosely on the C11 standard.
+    """A tokenizer for the C language based on the C11 standard.
 
     Iterate over an instance to get a stream of tokens.
 
@@ -84,10 +54,10 @@ class Tokenizer:
             - [x] "\\n" (Unix)
             - [x] "\\r\\n" (Windows)
             - [x] "\\r" (older MacOS?)
-        - [] Line continuations, i.e. line-ending escaped newlines.
+        - [x] Line continuations, i.e. escaped newlines at the ends of lines.
         - [] Universal escape sequences (starting with \\u or \\U) in identifiers, char constants, and string literals.
         - [] Other escape sequences in char constants and string literals.
-        - [] Missing ending newlines.
+        - [] A missing newline at the end of a non-empty source (optional?).
         - [] Digraphs and trigraphs (optional).
     """
 
@@ -99,7 +69,7 @@ class Tokenizer:
     lineno: int
 
     def __init__(self, source: str, filename: str = "<unknown>"):
-        self.source = _replace_line_continuations(source)
+        self.source = source
         self.filename = filename
         self.previous = 0
         self.current = 0
@@ -121,7 +91,7 @@ class Tokenizer:
     def __iter__(self) -> _t.Self:
         return self
 
-    def __next__(self) -> Token:
+    def __next__(self) -> Token:  # noqa: PLR0912
         # Signal that the tokenizer is done after the end of the source code.
         if self.current >= self.end:
             raise StopIteration
@@ -134,6 +104,9 @@ class Tokenizer:
 
         elif self.source.startswith("/*", self.current):
             tok_kind = self.block_comment()
+
+        elif self.source.startswith(("\\\r", "\\\n"), self.current):
+            tok_kind = self.escaped_newline()
 
         elif curr_char in "\r\n":
             tok_kind = self.newline()
@@ -277,6 +250,13 @@ class Tokenizer:
             self.current += 1
 
         return TokenKind.NL
+
+    def escaped_newline(self) -> _t.Literal[TokenKind.ESCAPED_NL]:
+        """Handle an escaped (i.e. preceded with a backslash) newline."""
+
+        self.current += 1  # For the backslash.
+        self.newline()
+        return TokenKind.ESCAPED_NL
 
     def whitespace(self) -> _t.Literal[TokenKind.WS]:
         """Handle unimportant whitespace."""

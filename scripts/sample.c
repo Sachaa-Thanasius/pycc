@@ -4,7 +4,8 @@ int main() {
     long b;   // equivalent to long int b;
     long long c;  // equivalent to long long int c;
     double e;
-    long double f;
+    long \
+double f;
 
     printf("Size of int = %zu bytes \n", sizeof(a));
     printf("Size of long int = %zu bytes\n", sizeof(b));

@@ -124,7 +124,9 @@ class _EnumMember:
         return getattr, (self._cls, self._name_)
 
 
-def _is_descriptor(obj: object) -> bool:
+def _is_descriptor(obj: object, /) -> bool:
+    """Whether a given object is a descriptor."""
+
     return hasattr(obj, "__get__") or hasattr(obj, "__set__") or hasattr(obj, "__delete__")
 
 

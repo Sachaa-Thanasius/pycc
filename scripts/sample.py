@@ -1,4 +1,4 @@
-# ruff: noqa: T201, T203
+# ruff: noqa: ERA001, T201, T203
 
 import time
 from pprint import pprint
@@ -34,6 +34,7 @@ def tokenizing_example() -> None:
     pprint(raw_tokens)
     print("=" * 40)
     print(f"Time to tokenize: {tc.elapsed}")
+
     print("=" * 40)
     print("".join(t.value for t in raw_tokens))
     print("\n")
@@ -47,15 +48,23 @@ def preprocessing_example() -> None:
     tokenizer = Tokenizer(file_source, file_name)
     preprocessor = Preprocessor(tokenizer)
     preprocessor.ignore_missing_includes = True
+
     with TimeCatcher() as tc:
         post_pp_tokens = list(preprocessor)
 
     pprint(post_pp_tokens)
     print("=" * 40)
     print(f"Time to tokenize + preprocess: {tc.elapsed}")
-    print("=" * 40)
+
+    # print("=" * 40)
+    # print(" ".join(t.value for t in post_pp_tokens))
+    # print("\n")
+
+
+def main() -> None:
+    tokenizing_example()
+    preprocessing_example()
 
 
 if __name__ == "__main__":
-    tokenizing_example()
-    preprocessing_example()
+    main()

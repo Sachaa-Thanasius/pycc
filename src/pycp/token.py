@@ -26,6 +26,7 @@ class TokenKind(Enum):
     NL                  = auto()
     COMMENT             = auto()
     WS                  = auto()
+    ESCAPED_NL          = auto()
 
     # Keywords (see KEYWORD_TOKEN_MAP)
     AUTO                = auto()
@@ -62,7 +63,7 @@ class TokenKind(Enum):
     VOID                = auto()
     VOLATILE            = auto()
     WHILE               = auto()
-    INT128__            = auto()
+    INT128__            = auto()  # Not in the C11 standard.
 
     # New keywords
     ALIGNAS_            = auto()
@@ -177,14 +178,14 @@ class TokenKind(Enum):
     # fmt: on
 
     @classmethod
-    def from_keyword(cls, name: str) -> TokenKind:
+    def from_keyword(cls, name: str, /) -> TokenKind:
         try:
             return _KEYWORD_TOKEN_MAP[name]
         except KeyError:
             raise ValueError(name) from None
 
     @classmethod
-    def from_punctuator(cls, punctuator: str) -> TokenKind:
+    def from_punctuator(cls, punctuator: str, /) -> TokenKind:
         try:
             return _PUNCTUATION_TOKEN_MAP[punctuator]
         except KeyError:

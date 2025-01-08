@@ -1,5 +1,10 @@
-"""Compatibility shim for typing- and annotation-related symbols, to avoid accidentally importing from typing or
-having a dependency on typing-extensions.
+"""Shim for typing- and annotation-related symbols to avoid runtime dependencies on `typing` or `typing-extensions`.
+
+A warning for annotation-related symbols: Do not directly import them from this module
+(e.g. `from ._typing_compat import Any`)! Doing so will trigger the module-level `__getattr__`, causing `typing` to
+get imported. Instead, import the module and use symbols via attribute access as needed
+(e.g. `from . import _typing_compat [as _t]`). To avoid those symbols being evaluated at runtime, which would also cause
+`typing` to get imported, make sure to put `from __future__ import annotations` at the top of the module.
 """
 
 from __future__ import annotations
@@ -16,14 +21,17 @@ else:
 
 
 __all__ = (
+    # Used at runtime
+    "cast",
+    # Somewhat version-dependent
+    "Self",
+    "TypeAlias",
+    # Everything else
     "Any",
     "ClassVar",
     "Literal",
     "Optional",
-    "Self",
-    "TypeAlias",
     "Union",
-    "cast",
 )
 
 
@@ -43,11 +51,12 @@ class _PlaceholderMeta(type):
         return f"<import placeholder for {self._source_module}.{self.__name__}>"
 
 
-class _PlaceholderGenericMeta(_PlaceholderMeta):
+class _PlaceholderGenericMeta(_PlaceholderMeta):  # pyright: ignore [reportUnusedClass] # Might be used yet.
     def __getitem__(self, item: object) -> _PlaceholderGenericAlias:
         return _PlaceholderGenericAlias(self, item)
 
 
+# cast is used at runtime, so there's no point importing it on demand from the right place.
 if TYPE_CHECKING:
     from typing import cast
 else:
@@ -56,6 +65,7 @@ else:
         return val
 
 
+# TypeAlias: Below 3.10, create a placeholder. For 3.10 and above, import on demand in __getattr__.
 if TYPE_CHECKING:
     from typing_extensions import TypeAlias
 elif sys.version_info < (3, 10):
@@ -64,6 +74,7 @@ elif sys.version_info < (3, 10):
         _source_module = "typing"
 
 
+# Self: Below 3.11, create a placeholder. For 3.11 and above, import on demand in __getattr__.
 if TYPE_CHECKING:
     from typing_extensions import Self
 elif sys.version_info < (3, 11):
@@ -73,6 +84,8 @@ elif sys.version_info < (3, 11):
 
 
 def __getattr__(name: str, /) -> object:
+    # Save the imported symbols in the globals to avoid future imports.
+
     global Any, ClassVar, Literal, Optional, Union  # noqa: PLW0603
 
     if name in {"Any", "ClassVar", "Literal", "Optional", "Union"}:
@@ -80,17 +93,16 @@ def __getattr__(name: str, /) -> object:
 
         return globals()[name]
 
-    if name == "TypeAlias" and sys.version_info >= (3, 10):
-        from typing import TypeAlias
+    if (
+        (name == "TypeAlias" and sys.version_info >= (3, 10))
+        or (name == "Self" and sys.version_info >= (3, 11))
+    ):  # fmt: skip
+        import typing
 
-        globals()[name] = TypeAlias
-        return globals()[name]
+        symbol = getattr(typing, name)
+        globals()[name] = symbol
 
-    if name == "Self" and sys.version_info >= (3, 11):
-        from typing import TypeAlias
-
-        globals()[name] = TypeAlias
-        return globals()[name]
+        return symbol
 
     msg = f"module {__name__!r} has no attribute {name!r}"
     raise AttributeError(msg)
