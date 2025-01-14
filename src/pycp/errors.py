@@ -84,7 +84,7 @@ class PycpWarning(Warning):
 
 
 class PycpSyntaxWarning(PycpWarning):
-    """Warning emitted while parsing C when a noncritical issue is encountered."""
+    """Warning emitted when a nonfatal issue is encountered while parsing C."""
 
 
 class PycpPreprocessorWarning(PycpWarning):

@@ -136,8 +136,9 @@ class Preprocessor:
         return self
 
     def __next__(self) -> Token:  # noqa: PLR0912
-        """Expand macros, evaluate preprocessor directives, and skip whitespace until a token is found that doesn't
-        qualify for those operations. Return that.
+        """Expand macros, evaluate preprocessor directives, and skip non-newline whitespace.
+
+        Return the next token that doesn't do one of the above.
         """
 
         for self.curr_tok in self.raw_tokens:  # noqa: B020 # False positive.
@@ -245,9 +246,10 @@ class Preprocessor:
         # Case 1: #include "foo.h"
         if name_start_tok.kind is TokenKind.STRING_LITERAL:
             parsed_include_name = name_start_tok.value[1:-1]
-            is_quoted = True
 
             self._skip_rest_of_line()
+
+            return parsed_include_name, True
 
         # Case 2: #include <foo.h>
         elif name_start_tok.kind is TokenKind.LT:
@@ -263,20 +265,11 @@ class Preprocessor:
             del _include_path_toks[-1]
 
             parsed_include_name = "".join(t.value for t in _include_path_toks)
-            is_quoted = False
-
-        # Case 3: #include FOO
-        elif self._is_macro(name_start_tok):
-            # TODO: Perform macro expansion, i.e. run through preprocessor and prepend to self.tokens. Then recurse?
-            # One way to recurse would be iterating over self instead of self.raw_tokens.
-            self._expand_macro()
-            raise NotImplementedError
+            return parsed_include_name, False
 
         else:
             msg = "Expected filename after #include."
             raise PycpSyntaxError.from_token(msg, name_start_tok)
-
-        return parsed_include_name, is_quoted
 
     def _find_include_path(self, include_name: str, *, is_quoted: bool = False) -> str:
         """Find an include path based on its name within pre-established include directories.
@@ -299,10 +292,9 @@ class Preprocessor:
         else:
             search_dirs = self.include_search_dirs
 
-        for i, include_dir in enumerate(search_dirs):
+        for self._include_next_index, include_dir in enumerate(search_dirs, start=1):
             candidate = os.path.normpath(os.path.join(include_dir, include_name))
             if os.path.exists(candidate):
-                self._include_next_index = i + 1
                 return candidate
 
         return include_name
@@ -343,22 +335,22 @@ class Preprocessor:
     # region ---- Directive handlers ----
 
     def pp_include(self) -> None:
-        """#include directive: Include the file, preprocess it, then prepend its tokens to our tokens."""
+        """#include directive: Find a file, preprocess it, then prepend its tokens to our tokens."""
 
-        include_name_start_tok = next(filter(_is_not_space, self.raw_tokens))
+        include_name_start_tok = next(self)
         include_name, is_quoted = self._read_include_name(include_name_start_tok)
         include_path = self._find_include_path(include_name, is_quoted=is_quoted)
         self._include_file(include_path, include_name_start_tok)
 
     def pp_include_next(self) -> None:
-        """#include_next directive: Include the file, preprocess it, then prepend its tokens to our tokens.
+        """#include_next directive: Find a file, preprocess it, then prepend its tokens to our tokens.
 
         Notes
         -----
         This is a *non-standard* directive.
         """
 
-        include_name_start_tok = next(filter(_is_not_space, self.raw_tokens))
+        include_name_start_tok = next(self)
         include_name, _ = self._read_include_name(include_name_start_tok)
         include_path = self._find_include_next_path(include_name)
         self._include_file(include_path, include_name_start_tok)
